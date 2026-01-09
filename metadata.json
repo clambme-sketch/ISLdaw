@@ -1,0 +1,7 @@
+{
+  "name": "ISLdaw",
+  "description": "A modern, browser-based Digital Audio Workstation featuring a multi-track timeline, real-time audio playback, drag-and-drop arranging, and an AI creative assistant.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
