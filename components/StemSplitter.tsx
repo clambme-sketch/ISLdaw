@@ -67,7 +67,7 @@ export const StemSplitter: React.FC<StemSplitterProps> = ({ isOpen, onClose, onS
   };
 
   return (
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
       <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden animate-slide-up">
         
         <div className="p-6 border-b border-gray-800 flex justify-between items-center">

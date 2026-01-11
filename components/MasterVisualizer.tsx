@@ -4,9 +4,14 @@ import { audioService } from '../services/audioEngine';
 
 interface MasterVisualizerProps {
   isPlaying: boolean;
+  config?: {
+      mode: 'SPECTRUM' | 'WAVEFORM' | 'OFF';
+      colorStart: string;
+      colorEnd: string;
+  };
 }
 
-export const MasterVisualizer: React.FC<MasterVisualizerProps> = ({ isPlaying }) => {
+export const MasterVisualizer: React.FC<MasterVisualizerProps> = ({ isPlaying, config = { mode: 'SPECTRUM', colorStart: '#3b82f6', colorEnd: '#ef4444' } }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -19,6 +24,9 @@ export const MasterVisualizer: React.FC<MasterVisualizerProps> = ({ isPlaying })
     const analyser = audioService.getTrackAnalyser('master');
     if (!analyser) return;
 
+    // Use larger FFT for waveform
+    analyser.fftSize = 2048;
+
     const bufferLength = analyser.frequencyBinCount;
     const dataArray = new Uint8Array(bufferLength);
 
@@ -28,8 +36,6 @@ export const MasterVisualizer: React.FC<MasterVisualizerProps> = ({ isPlaying })
       // Get dimensions every frame to handle resize
       const width = canvas.width;
       const height = canvas.height;
-
-      analyser.getByteFrequencyData(dataArray);
 
       // Background
       ctx.fillStyle = '#0f172a'; // Match gray-950
@@ -44,38 +50,75 @@ export const MasterVisualizer: React.FC<MasterVisualizerProps> = ({ isPlaying })
       }
       ctx.stroke();
 
-      // Spectrum Line
+      if (config.mode === 'OFF') return;
+
       ctx.lineWidth = 2;
-      ctx.strokeStyle = '#3b82f6'; // Blue-500
-      ctx.fillStyle = 'rgba(59, 130, 246, 0.2)'; // Blue-500 low opacity
+      const gradient = ctx.createLinearGradient(0, height, 0, 0);
+      gradient.addColorStop(0, config.colorStart);
+      gradient.addColorStop(1, config.colorEnd);
+      
+      ctx.strokeStyle = gradient;
+      ctx.fillStyle = gradient; // For fill operations if needed
 
-      ctx.beginPath();
-      ctx.moveTo(0, height);
+      if (config.mode === 'SPECTRUM') {
+          analyser.getByteFrequencyData(dataArray);
+          
+          ctx.beginPath();
+          ctx.moveTo(0, height);
 
-      const barWidth = width / bufferLength * 2.5;
-      let x = 0;
+          // Only draw up to ~22kHz (usually the whole buffer in Web Audio)
+          // We can skip high frequencies if empty, but standard implementation fits buffer to width
+          const barWidth = width / bufferLength * 2.5; 
+          let x = 0;
 
-      for(let i = 0; i < bufferLength; i++) {
-        const v = dataArray[i] / 255.0;
-        const y = height - (v * height);
+          for(let i = 0; i < bufferLength; i++) {
+            const v = dataArray[i] / 255.0;
+            const y = height - (v * height);
 
-        // Smooth curve interpolation could go here, but lineTo is sufficient for this aesthetic
-        ctx.lineTo(x, y);
+            ctx.lineTo(x, y);
+            x += barWidth;
+          }
 
-        x += barWidth;
+          ctx.lineTo(width, height);
+          ctx.closePath();
+          // Spectrum usually looks better filled with low opacity
+          ctx.globalAlpha = 0.5;
+          ctx.fill();
+          ctx.globalAlpha = 1.0;
+          ctx.stroke();
+          
+          // Text Labels
+          ctx.fillStyle = '#64748b';
+          ctx.font = '10px monospace';
+          ctx.textAlign = 'left';
+          ctx.fillText('20Hz', 10, height - 5);
+          ctx.textAlign = 'center';
+          ctx.fillText('1kHz', width / 2, height - 5);
+          ctx.textAlign = 'right';
+          ctx.fillText('20kHz', width - 10, height - 5);
+
+      } else if (config.mode === 'WAVEFORM') {
+          analyser.getByteTimeDomainData(dataArray);
+          
+          ctx.beginPath();
+          const sliceWidth = width / bufferLength;
+          let x = 0;
+
+          for(let i = 0; i < bufferLength; i++) {
+              const v = dataArray[i] / 128.0;
+              const y = v * height / 2;
+
+              if(i === 0) {
+                  ctx.moveTo(x, y);
+              } else {
+                  ctx.lineTo(x, y);
+              }
+
+              x += sliceWidth;
+          }
+          ctx.lineTo(width, height/2);
+          ctx.stroke();
       }
-
-      ctx.lineTo(width, height);
-      ctx.closePath();
-      ctx.stroke();
-      ctx.fill();
-
-      // Text Labels
-      ctx.fillStyle = '#64748b';
-      ctx.font = '10px monospace';
-      ctx.fillText('20Hz', 10, height - 5);
-      ctx.fillText('1kHz', width / 2, height - 5);
-      ctx.fillText('20kHz', width - 40, height - 5);
 
       if (isPlaying) {
           animationId = requestAnimationFrame(draw);
@@ -87,7 +130,9 @@ export const MasterVisualizer: React.FC<MasterVisualizerProps> = ({ isPlaying })
     return () => {
       cancelAnimationFrame(animationId);
     };
-  }, [isPlaying]);
+  }, [isPlaying, config]);
+
+  if (config.mode === 'OFF') return null;
 
   return (
     <div className="w-full h-full relative rounded-lg overflow-hidden border border-gray-800 bg-gray-950 shadow-inner">

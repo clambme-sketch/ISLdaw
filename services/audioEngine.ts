@@ -500,6 +500,62 @@ class AudioEngine {
       }
       return impulse;
   }
+  
+  // --- Analysis & Alignment ---
+  
+  public calculateAlignmentLag(refData: Float32Array, targetData: Float32Array, sampleRate: number): number {
+    // 1. Downsample to ~4kHz for performance speedup
+    // Comparing 4096 samples instead of 44100
+    const ratio = Math.floor(sampleRate / 4000);
+    const len = Math.floor(Math.min(refData.length, targetData.length) / ratio);
+    
+    if (len < 50) return 0;
+
+    const smallRef = new Float32Array(len);
+    const smallTgt = new Float32Array(len);
+    
+    for(let i=0; i<len; i++) {
+        smallRef[i] = refData[i*ratio];
+        smallTgt[i] = targetData[i*ratio];
+    }
+    
+    // 2. Cross Correlation
+    // Search Range: +/- 200ms
+    const maxShift = Math.floor(0.2 * 4000); // approx 800 samples at 4kHz
+    
+    let bestShift = 0;
+    let maxCorr = -Infinity;
+    
+    for(let shift = -maxShift; shift <= maxShift; shift++) {
+        let sum = 0;
+        let count = 0;
+        for(let i=0; i<len; i++) {
+            const j = i + shift;
+            if (j >= 0 && j < len) {
+                sum += smallRef[i] * smallTgt[j];
+                count++;
+            }
+        }
+        
+        // Normalize for number of overlaps to avoid biasing towards zero shift
+        if (count > 0) {
+            const avg = sum / count;
+            if (avg > maxCorr) {
+                maxCorr = avg;
+                bestShift = shift;
+            }
+        }
+    }
+    
+    // Convert shift back to seconds
+    // Negative shift means Target is late relative to Reference
+    // We return the time value to SUBTRACT from Target's start time to align it.
+    // If shift is +10 samples: Ref[i] matches Tgt[i+10]. Tgt is delayed.
+    // To align, we need to move Tgt left (earlier).
+    // offset = -(10 / rate)
+    
+    return -(bestShift / 4000);
+  }
 
   // --- Playback & Automation ---
 

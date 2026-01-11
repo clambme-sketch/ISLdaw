@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Square, FastForward, Rewind, Activity, Scissors, MousePointer2, ZoomIn, ZoomOut, Grid, Undo, Redo, Download, Circle, Repeat, Timer, Settings } from 'lucide-react';
+import { Play, Square, FastForward, Rewind, Activity, Scissors, MousePointer2, ZoomIn, ZoomOut, Grid, Undo, Redo, Download, Circle, Repeat, Timer, Settings, Check, Clock, Music4, Lock } from 'lucide-react';
 import { LoopRegion, ToolType } from '../types';
 
 interface TransportProps {
@@ -39,6 +39,11 @@ interface TransportProps {
   setCountInMeasures: (n: number) => void;
   
   onOpenSettings: () => void;
+
+  followPlayhead: boolean;
+  setFollowPlayhead: (follow: boolean) => void;
+  timeDisplayFormat: 'TIME' | 'BARS';
+  setTimeDisplayFormat: (fmt: 'TIME' | 'BARS') => void;
 }
 
 const formatTime = (seconds: number) => {
@@ -48,11 +53,23 @@ const formatTime = (seconds: number) => {
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
 };
 
+const formatBars = (seconds: number, bpm: number) => {
+    const beatsPerSecond = bpm / 60;
+    const totalBeats = seconds * beatsPerSecond;
+    
+    // Assuming 4/4 signature for simplicity
+    const bar = Math.floor(totalBeats / 4) + 1;
+    const beat = Math.floor(totalBeats % 4) + 1;
+    const sixteenth = Math.floor((totalBeats % 1) * 4) + 1;
+    
+    return `${bar}.${beat}.${sixteenth}`;
+};
+
 export const Transport: React.FC<TransportProps> = ({ 
     isPlaying, 
     onPlay, 
     onStop, 
-    onRewind,
+    onRewind, 
     onFastForward,
     isRecording,
     onRecord,
@@ -77,21 +94,29 @@ export const Transport: React.FC<TransportProps> = ({
     toggleMetronome,
     countInMeasures,
     setCountInMeasures,
-    onOpenSettings
+    onOpenSettings,
+    followPlayhead,
+    setFollowPlayhead,
+    timeDisplayFormat,
+    setTimeDisplayFormat
 }) => {
   const [showCountInMenu, setShowCountInMenu] = useState(false);
+  const [showTimerMenu, setShowTimerMenu] = useState(false);
+  const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
   
   // Tap Tempo State
   const tapTimesRef = useRef<number[]>([]);
 
   useEffect(() => {
-      const closeMenu = () => setShowCountInMenu(false);
-      if (showCountInMenu) window.addEventListener('click', closeMenu);
+      const closeMenu = () => {
+          setShowCountInMenu(false);
+          setShowTimerMenu(false);
+      };
+      if (showCountInMenu || showTimerMenu) window.addEventListener('click', closeMenu);
       return () => window.removeEventListener('click', closeMenu);
-  }, [showCountInMenu]);
+  }, [showCountInMenu, showTimerMenu]);
 
   const handleMetronomeClick = (e: React.MouseEvent) => {
-      // Toggle logic first
       toggleMetronome();
 
       // Tap Tempo Logic
@@ -116,6 +141,13 @@ export const Transport: React.FC<TransportProps> = ({
               setBpm(newBpm);
           }
       }
+  };
+
+  const handleTimerContextMenu = (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setMenuPos({ x: e.clientX, y: e.clientY });
+      setShowTimerMenu(true);
   };
 
   return (
@@ -205,8 +237,19 @@ export const Transport: React.FC<TransportProps> = ({
             </div>
 
             {/* Time Display */}
-            <div className="bg-black/40 px-3 py-1.5 rounded text-blue-400 font-mono text-lg min-w-[100px] text-center border border-blue-500/20 shadow-inner flex-shrink-0" title="Current Playhead Position">
-                {formatTime(currentTime)}
+            <div 
+                onContextMenu={handleTimerContextMenu}
+                className="bg-black/40 px-3 py-1.5 rounded text-blue-400 font-mono text-lg min-w-[120px] text-center border border-blue-500/20 shadow-inner flex-shrink-0 cursor-context-menu hover:border-blue-500/50 transition-colors relative" 
+                title="Current Position (Right-click for options)"
+            >
+                {timeDisplayFormat === 'TIME' ? formatTime(currentTime) : formatBars(currentTime, bpm)}
+                
+                {/* Tiny indicator for Follow mode */}
+                {followPlayhead && (
+                    <div className="absolute top-1 right-1">
+                        <Lock size={8} className="text-yellow-500/50" />
+                    </div>
+                )}
             </div>
           </div>
 
@@ -302,6 +345,42 @@ export const Transport: React.FC<TransportProps> = ({
             </button>
           </div>
       </div>
+
+      {/* Timer Context Menu (Fixed Position) */}
+      {showTimerMenu && (
+        <div 
+            className="fixed z-[100] bg-gray-800 border border-gray-600 rounded-lg shadow-xl w-48 py-1 text-sm text-gray-200"
+            style={{ top: menuPos.y + 10, left: menuPos.x - 20 }}
+        >
+            <div className="px-3 py-1.5 text-xs font-bold text-gray-500 uppercase border-b border-gray-700 mb-1">Display Options</div>
+            
+            <button 
+                onClick={() => setTimeDisplayFormat('TIME')}
+                className="w-full text-left px-3 py-2 hover:bg-gray-700 flex items-center justify-between"
+            >
+                <span className="flex items-center gap-2"><Clock size={14} /> Time (mm:ss)</span>
+                {timeDisplayFormat === 'TIME' && <Check size={14} className="text-blue-400" />}
+            </button>
+            
+            <button 
+                onClick={() => setTimeDisplayFormat('BARS')}
+                className="w-full text-left px-3 py-2 hover:bg-gray-700 flex items-center justify-between"
+            >
+                <span className="flex items-center gap-2"><Music4 size={14} /> Measures (Bars)</span>
+                {timeDisplayFormat === 'BARS' && <Check size={14} className="text-blue-400" />}
+            </button>
+            
+            <div className="h-px bg-gray-700 my-1"></div>
+            
+            <button 
+                onClick={() => setFollowPlayhead(!followPlayhead)}
+                className="w-full text-left px-3 py-2 hover:bg-gray-700 flex items-center justify-between"
+            >
+                <span className="flex items-center gap-2"><Lock size={14} /> Follow Playhead</span>
+                {followPlayhead && <Check size={14} className="text-yellow-400" />}
+            </button>
+        </div>
+      )}
     </div>
   );
 };

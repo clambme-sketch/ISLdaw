@@ -1,7 +1,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { Track } from '../types';
-import { Volume2, VolumeX, Mic, Headphones, Activity, TrendingUp, ChevronDown } from 'lucide-react';
+import { Volume2, VolumeX, Mic, Headphones, Activity, TrendingUp, ChevronDown, Eye } from 'lucide-react';
 import { audioService } from '../services/audioEngine';
 import { TRACK_HEIGHT, AUTOMATION_HEIGHT } from '../constants';
 
@@ -17,6 +17,7 @@ interface TrackControlProps {
   
   onOpenEditor: (trackId: string) => void;
   onToggleAutomation: (trackId: string) => void;
+  onOpenVisualizerSettings?: () => void;
 }
 
 export const TrackControl: React.FC<TrackControlProps> = ({ 
@@ -27,7 +28,8 @@ export const TrackControl: React.FC<TrackControlProps> = ({
     isRecordingGlobal,
     onArmToggle,
     onOpenEditor,
-    onToggleAutomation
+    onToggleAutomation,
+    onOpenVisualizerSettings
 }) => {
   const isMaster = track.isMaster;
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -176,7 +178,18 @@ export const TrackControl: React.FC<TrackControlProps> = ({
             </>
         )}
         
-        {isMaster && <span className="text-[10px] text-gray-500 uppercase font-bold">Vol</span>}
+        {isMaster && (
+             <>
+                <button
+                    onClick={(e) => { e.stopPropagation(); onOpenVisualizerSettings?.(); }}
+                    className="p-1.5 bg-gray-700 text-gray-400 hover:text-blue-400 hover:bg-gray-600 rounded transition-colors"
+                    title="Visualizer Settings"
+                >
+                    <Eye size={14} />
+                </button>
+                <span className="text-[10px] text-gray-500 uppercase font-bold">Vol</span>
+             </>
+        )}
 
         <div className="flex-1" onClick={e => e.stopPropagation()}>
             <input

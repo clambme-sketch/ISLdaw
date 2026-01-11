@@ -87,19 +87,19 @@ export const ClipEditor: React.FC<ClipEditorProps> = ({ clip, onUpdate, onClose,
         <div className="flex flex-col gap-2 w-32 shrink-0">
             <div className="flex items-center justify-between text-xs text-gray-400">
                 <span className="flex items-center gap-1"><Gauge size={12}/> Pitch/Rate</span>
-                <span>{clip.playbackRate.toFixed(2)}x</span>
+                <span>{clip.playbackRate.toFixed(3)}x</span>
             </div>
             <input 
                 type="range" 
-                min="0.25" max="2" step="0.05" 
+                min="0.1" max="4.0" step="0.001" 
                 value={clip.playbackRate}
                 onChange={(e) => onUpdate(clip.id, { playbackRate: parseFloat(e.target.value) })}
                 className="w-full h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-purple-500"
-                title={`Playback Rate: ${clip.playbackRate.toFixed(2)}x`}
+                title={`Playback Rate: ${clip.playbackRate.toFixed(3)}x`}
             />
              <div className="flex justify-between text-[10px] text-gray-600 font-mono">
-                <span>Slow</span>
-                <span>Fast</span>
+                <span>0.1x</span>
+                <span>4.0x</span>
             </div>
         </div>
 
@@ -120,7 +120,7 @@ export const ClipEditor: React.FC<ClipEditorProps> = ({ clip, onUpdate, onClose,
                 />
                 <button 
                     onClick={handleWarp}
-                    className="flex-1 bg-gray-700 hover:bg-gray-600 text-xs text-gray-200 rounded px-2 py-1 transition-colors"
+                    className="flex-1 bg-gray-700 hover:bg-gray-600 text-xs text-gray-200 rounded px-2 py-1 transition-colors active:bg-blue-600 active:text-white"
                     title={`Match clip to Project BPM (${projectBpm})`}
                 >
                     Match

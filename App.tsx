@@ -8,6 +8,7 @@ import { ClipEditor } from './components/ClipEditor';
 import { TrackEditor } from './components/TrackEditor';
 import { MasterVisualizer } from './components/MasterVisualizer';
 import { SettingsModal } from './components/SettingsModal';
+import { VisualizerSettings } from './components/VisualizerSettings';
 import { Track, AudioClip, PlaybackState, ToolType, HistoryState, AutomationPoint, LoopRegion } from './types';
 import { TRACK_COLORS, TRACK_HEADER_WIDTH, TIMELINE_RULER_HEIGHT } from './constants';
 import { audioService } from './services/audioEngine';
@@ -48,6 +49,25 @@ function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [timeMarkers, setTimeMarkers] = useState<{time: number, label: string}[]>([]);
   
+  // Transport Display State
+  const [followPlayhead, setFollowPlayhead] = useState(false);
+  const [timeDisplayFormat, setTimeDisplayFormat] = useState<'TIME' | 'BARS'>('TIME');
+  
+  // Refs for transport state to be accessible in animation loop
+  const followPlayheadRef = useRef(followPlayhead);
+  const zoomRef = useRef(zoom);
+
+  useEffect(() => { followPlayheadRef.current = followPlayhead; }, [followPlayhead]);
+  useEffect(() => { zoomRef.current = zoom; }, [zoom]);
+  
+  // Visualizer Config
+  const [isVisualizerSettingsOpen, setIsVisualizerSettingsOpen] = useState(false);
+  const [visualizerConfig, setVisualizerConfig] = useState<{mode: 'SPECTRUM' | 'WAVEFORM' | 'OFF', colorStart: string, colorEnd: string}>({
+      mode: 'SPECTRUM',
+      colorStart: '#3b82f6',
+      colorEnd: '#ef4444'
+  });
+
   // Metronome State
   const [isMetronomeOn, setIsMetronomeOn] = useState(false);
   const [countInMeasures, setCountInMeasures] = useState(1);
@@ -72,6 +92,7 @@ function App() {
   
   // Selection State (Multi-select)
   const [selectedClipIds, setSelectedClipIds] = useState<string[]>([]);
+  const [isClipEditorOpen, setIsClipEditorOpen] = useState(false); // Only open on double click
   const [clipboardClips, setClipboardClips] = useState<AudioClip[]>([]);
   const [editingTrackId, setEditingTrackId] = useState<string | null>(null);
 
@@ -212,6 +233,20 @@ function App() {
       if (loopRegionRef.current.enabled && newTime >= loopRegionRef.current.end) {
           startPlayback(loopRegionRef.current.start);
           return; 
+      }
+      
+      // Auto-Scroll / Follow Playhead
+      if (followPlayheadRef.current && scrollContainerRef.current) {
+          const containerWidth = scrollContainerRef.current.clientWidth;
+          const currentZoom = zoomRef.current;
+          const playheadX = newTime * currentZoom;
+          // Center the playhead
+          const targetScroll = playheadX - (containerWidth / 2);
+          
+          // Only scroll if strictly increasing to avoid jitter, or just set it
+          if (Math.abs(scrollContainerRef.current.scrollLeft - targetScroll) > 1) {
+              scrollContainerRef.current.scrollLeft = Math.max(0, targetScroll);
+          }
       }
       
       setPlaybackState(prev => ({ ...prev, currentTime: newTime }));
@@ -490,9 +525,101 @@ function App() {
       if (playbackState.isPlaying) startPlayback(playbackState.currentTime); 
   };
   
-  const handleClipResize = (clipId: string, newDuration: number) => {
-      const newClips = clips.map(c => c.id === clipId ? { ...c, duration: newDuration } : c);
+  // Refactored to handle Left/Right resizing
+  const handleClipResize = (clipId: string, newStartTime: number, newDuration: number, newOffset: number) => {
+      const newClips = clips.map(c => {
+          if (c.id === clipId) {
+             return { 
+                 ...c, 
+                 startTime: newStartTime, 
+                 duration: newDuration, 
+                 offset: newOffset 
+             };
+          }
+          return c;
+      });
       setClips(newClips);
+  };
+  
+  const handleAutoAlign = () => {
+      if (selectedClipIds.length !== 2) return;
+      
+      const clipA = clips.find(c => c.id === selectedClipIds[0]);
+      const clipB = clips.find(c => c.id === selectedClipIds[1]);
+      
+      if (!clipA || !clipB) return;
+      
+      // Determine Reference (Upper Track)
+      const trackIdxA = tracks.findIndex(t => t.id === clipA.trackId);
+      const trackIdxB = tracks.findIndex(t => t.id === clipB.trackId);
+      
+      let refClip = clipA;
+      let targetClip = clipB;
+      
+      // If B is above A, B is ref. If same track, Left is ref.
+      if (trackIdxB < trackIdxA) {
+          refClip = clipB;
+          targetClip = clipA;
+      } else if (trackIdxA === trackIdxB) {
+          if (clipB.startTime < clipA.startTime) {
+              refClip = clipB;
+              targetClip = clipA;
+          }
+      }
+      
+      // Calculate Overlap Region
+      const overlapStart = Math.max(refClip.startTime, targetClip.startTime);
+      const overlapEnd = Math.min(refClip.startTime + refClip.duration, targetClip.startTime + targetClip.duration);
+      const duration = overlapEnd - overlapStart;
+      
+      if (duration < 0.2) {
+          alert("Selected clips do not overlap enough to align.");
+          return;
+      }
+      
+      // Extract Audio Data from Overlap
+      // Limit analysis to 3 seconds to keep UI responsive
+      const analysisDuration = Math.min(duration, 3.0);
+      const sampleRate = refClip.buffer.sampleRate; // Assume matching sample rates for simplicity
+      
+      const getClipData = (clip: AudioClip) => {
+           // Calculate start sample in buffer
+           // Time from clip start to overlap start
+           const relativeStart = overlapStart - clip.startTime;
+           // Add internal offset
+           const bufferTimeStart = relativeStart + clip.offset;
+           
+           const startSample = Math.floor(bufferTimeStart * sampleRate);
+           const lengthSamples = Math.floor(analysisDuration * sampleRate);
+           
+           // Handle case where we might go out of bounds (though overlap check should prevent most)
+           const channelData = clip.buffer.getChannelData(0); // Mono correlation
+           if (startSample + lengthSamples > channelData.length) {
+               return channelData.slice(startSample);
+           }
+           return channelData.slice(startSample, startSample + lengthSamples);
+      };
+      
+      const refData = getClipData(refClip);
+      const targetData = getClipData(targetClip);
+      
+      // Calculate Lag
+      const offsetSeconds = audioService.calculateAlignmentLag(refData, targetData, sampleRate);
+      
+      if (Math.abs(offsetSeconds) < 0.0005) {
+          // alert("Already aligned!");
+          return; 
+      }
+      
+      // Apply offset to target clip
+      // If offsetSeconds is negative (target is late), we move target clip EARLIER (subtract from startTime)
+      // New Start Time = Current Start Time + offsetSeconds
+      // (Wait, logic check: if offset is -0.01s, we want to move clip left by 0.01s. So += offsetSeconds works)
+      
+      const newStartTime = targetClip.startTime + offsetSeconds;
+      
+      const newClips = clips.map(c => c.id === targetClip.id ? { ...c, startTime: newStartTime } : c);
+      updateStateWithHistory(tracks, newClips);
   };
 
   // --- Batch Operations (Delete, Duplicate, Copy, Paste) ---
@@ -562,12 +689,35 @@ function App() {
   const handleSplitClip = (clipId: string, splitTime: number) => {
       const clip = clips.find(c => c.id === clipId);
       if (!clip) return;
-      const relativeSplit = splitTime - clip.startTime;
-      if (relativeSplit <= 0 || relativeSplit >= (clip.duration / clip.playbackRate)) return;
       
-      const firstDuration = relativeSplit * clip.playbackRate;
-      const leftClip: AudioClip = { ...clip, id: uuidv4(), duration: firstDuration, name: clip.name };
-      const rightClip: AudioClip = { ...clip, id: uuidv4(), startTime: splitTime, offset: clip.offset + firstDuration, duration: clip.duration - firstDuration, name: clip.name };
+      const relativeSplit = splitTime - clip.startTime;
+      // Adjusted bounds check to allow splitting near edges but not exact edges
+      if (relativeSplit <= 0.01 || relativeSplit >= (clip.duration - 0.01)) return;
+      
+      const leftDuration = relativeSplit; // Visual duration
+      const rightDuration = clip.duration - leftDuration;
+      
+      // Calculate buffer offset for right clip
+      // clip.offset is where the current clip starts in the buffer.
+      // split happens at leftDuration * playbackRate into the visible clip.
+      const splitPointInBuffer = leftDuration * clip.playbackRate;
+      const rightOffset = clip.offset + splitPointInBuffer;
+
+      const leftClip: AudioClip = { 
+          ...clip, 
+          id: uuidv4(), 
+          duration: leftDuration, 
+          name: clip.name 
+      };
+      
+      const rightClip: AudioClip = { 
+          ...clip, 
+          id: uuidv4(), 
+          startTime: splitTime, 
+          offset: rightOffset, 
+          duration: rightDuration, 
+          name: clip.name 
+      };
 
       const newClips = clips.filter(c => c.id !== clipId);
       newClips.push(leftClip, rightClip);
@@ -689,6 +839,8 @@ function App() {
   const totalBars = Math.ceil(totalDuration / secondsPerBar) + 5;
   const pixelsPerBar = secondsPerBar * zoom;
   const timelineWidth = totalBars * pixelsPerBar;
+  
+  const masterHeightClass = visualizerConfig.mode === 'OFF' ? 'h-[135px]' : 'h-44';
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-gray-950 text-white font-sans selection:bg-purple-500/30">
@@ -696,6 +848,13 @@ function App() {
           isOpen={isSettingsOpen} 
           onClose={() => setIsSettingsOpen(false)}
           onExportStems={handleExportStems}
+      />
+      
+      <VisualizerSettings 
+          isOpen={isVisualizerSettingsOpen}
+          onClose={() => setIsVisualizerSettingsOpen(false)}
+          config={visualizerConfig}
+          onChange={setVisualizerConfig}
       />
 
       <Transport 
@@ -730,11 +889,16 @@ function App() {
         countInMeasures={countInMeasures}
         setCountInMeasures={setCountInMeasures}
         onOpenSettings={() => setIsSettingsOpen(true)}
+        
+        followPlayhead={followPlayhead}
+        setFollowPlayhead={setFollowPlayhead}
+        timeDisplayFormat={timeDisplayFormat}
+        setTimeDisplayFormat={setTimeDisplayFormat}
       />
 
       {/* Main Workspace: Single Unified Scroll Container */}
       <div 
-        className="flex-1 overflow-auto relative" 
+        className="flex-1 overflow-auto relative custom-scrollbar-hidden" 
         ref={scrollContainerRef}
         onScroll={handleMainScroll}
       >
@@ -812,6 +976,8 @@ function App() {
                     onClipResize={handleClipResize}
                     onLoopClip={handleLoopToggle}
                     onFlattenClip={handleFlattenClip}
+                    onClipDoubleClick={(id) => { setIsClipEditorOpen(true); setSelectedClipIds([id]); }}
+                    onAutoAlign={handleAutoAlign}
                     
                     loopRegion={loopRegion}
                     setLoopRegion={setLoopRegion}
@@ -825,7 +991,7 @@ function App() {
       </div>
 
       {/* Fixed Bottom Master Section */}
-      <div className="h-44 bg-gray-900 border-t-2 border-gray-800 flex flex-col z-50 shadow-[0_-5px_15px_rgba(0,0,0,0.5)]">
+      <div className={`${masterHeightClass} bg-gray-900 border-t-2 border-gray-800 flex flex-col z-50 shadow-[0_-5px_15px_rgba(0,0,0,0.5)] transition-all duration-300 ease-in-out`}>
          {/* Master Row */}
          <div className="flex flex-1 overflow-hidden">
              {/* Master Control (Left) */}
@@ -839,11 +1005,15 @@ function App() {
                   onArmToggle={() => {}}
                   onOpenEditor={setEditingTrackId}
                   onToggleAutomation={() => {}}
+                  onOpenVisualizerSettings={() => setIsVisualizerSettingsOpen(true)}
                 />
              </div>
              {/* Master Visualizer (Right) */}
              <div className="flex-1 p-2 bg-gray-900 flex items-center justify-center">
-                 <MasterVisualizer isPlaying={playbackState.isPlaying} />
+                 <MasterVisualizer 
+                    isPlaying={playbackState.isPlaying} 
+                    config={visualizerConfig}
+                 />
              </div>
          </div>
 
@@ -869,9 +1039,9 @@ function App() {
           />
       ) : (
           <ClipEditor 
-            clip={selectedClip} 
+            clip={isClipEditorOpen ? selectedClip : null} 
             onUpdate={updateClipProps} 
-            onClose={() => setSelectedClipIds([])}
+            onClose={() => setIsClipEditorOpen(false)}
             projectBpm={bpm}
           />
       )}
