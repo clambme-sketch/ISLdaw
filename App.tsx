@@ -7,6 +7,7 @@ import { Transport } from './components/Transport';
 import { ClipEditor } from './components/ClipEditor';
 import { TrackEditor } from './components/TrackEditor';
 import { MasterVisualizer } from './components/MasterVisualizer';
+import { SettingsModal } from './components/SettingsModal';
 import { Track, AudioClip, PlaybackState, ToolType, HistoryState, AutomationPoint, LoopRegion } from './types';
 import { TRACK_COLORS, TRACK_HEADER_WIDTH, TIMELINE_RULER_HEIGHT } from './constants';
 import { audioService } from './services/audioEngine';
@@ -39,11 +40,13 @@ function App() {
   const [clips, setClips] = useState<AudioClip[]>([]);
   
   // --- UI/Tool State ---
-  const [bpm, setBpm] = useState<number>(120);
+  const [bpm, setBpm] = useState<number>(90);
   const [zoom, setZoom] = useState<number>(50); // Pixels per second
   const [snap, setSnap] = useState<boolean>(true);
   const [tool, setTool] = useState<ToolType>('MOVE');
   const [isExporting, setIsExporting] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [timeMarkers, setTimeMarkers] = useState<{time: number, label: string}[]>([]);
   
   // Metronome State
   const [isMetronomeOn, setIsMetronomeOn] = useState(false);
@@ -53,22 +56,27 @@ function App() {
   const [loopRegion, setLoopRegion] = useState<LoopRegion>({ start: 0, end: 8, enabled: false });
   // Ref for loop region to access in RAF without re-binding
   const loopRegionRef = useRef(loopRegion);
+  const markersRef = useRef(timeMarkers);
   
   useEffect(() => {
       loopRegionRef.current = loopRegion;
   }, [loopRegion]);
+  
+  useEffect(() => {
+      markersRef.current = timeMarkers;
+  }, [timeMarkers]);
 
   // Recording State
   const [armedTrackId, setArmedTrackId] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   
-  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
-  const [clipboardClip, setClipboardClip] = useState<AudioClip | null>(null);
+  // Selection State (Multi-select)
+  const [selectedClipIds, setSelectedClipIds] = useState<string[]>([]);
+  const [clipboardClips, setClipboardClips] = useState<AudioClip[]>([]);
   const [editingTrackId, setEditingTrackId] = useState<string | null>(null);
 
-  // --- Scroll Synchronization Refs ---
-  const trackHeaderRef = useRef<HTMLDivElement>(null);
-  const timelineRef = useRef<HTMLDivElement>(null);
+  // --- Refs ---
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const navigatorRef = useRef<HTMLDivElement>(null);
 
   // --- History State ---
@@ -84,8 +92,9 @@ function App() {
   const rafRef = useRef<number | null>(null);
   const startTimeRef = useRef<number>(0); 
   const pauseTimeRef = useRef<number>(0); 
-  const recordStartTimeRef = useRef<number>(0);
-
+  const recordStartTimeRef = useRef<number>(0); // Timeline position where recording block starts
+  const recordPreRollRef = useRef<number>(0); // How much physical audio was captured BEFORE timeline start
+  
   // Initialize Audio Nodes
   useEffect(() => {
     tracks.forEach(track => {
@@ -94,24 +103,39 @@ function App() {
       audioService.updateTrackPlugins(track.id, track.plugins);
     });
   }, []); 
-  
-  // --- Scroll Sync ---
-  const handleTimelineScroll = (e: React.UIEvent<HTMLDivElement>) => {
-      const target = e.target as HTMLDivElement;
-      if (trackHeaderRef.current) {
-          trackHeaderRef.current.scrollTop = target.scrollTop;
-      }
-      if (navigatorRef.current) {
-          navigatorRef.current.scrollLeft = target.scrollLeft;
+
+  // --- Navigator Scroll Sync ---
+  const handleMainScroll = () => {
+      if (scrollContainerRef.current && navigatorRef.current) {
+          navigatorRef.current.scrollLeft = scrollContainerRef.current.scrollLeft;
       }
   };
-  
+
   const handleNavigatorScroll = (e: React.UIEvent<HTMLDivElement>) => {
       const target = e.target as HTMLDivElement;
-      if (timelineRef.current) {
-          timelineRef.current.scrollLeft = target.scrollLeft;
+      if (scrollContainerRef.current) {
+          scrollContainerRef.current.scrollLeft = target.scrollLeft;
       }
   };
+  
+  // --- Smart Zoom Handling ---
+  const handleZoomChange = useCallback((newZoom: number) => {
+      const clampedZoom = Math.max(10, Math.min(500, newZoom));
+      setZoom(clampedZoom);
+
+      // Center playhead logic
+      if (scrollContainerRef.current) {
+          requestAnimationFrame(() => {
+              if (scrollContainerRef.current) {
+                  const containerWidth = scrollContainerRef.current.clientWidth;
+                  const playheadX = playbackState.currentTime * clampedZoom;
+                  // Center playhead: target scroll is playheadX - halfWidth
+                  const targetScroll = Math.max(0, playheadX - (containerWidth / 2));
+                  scrollContainerRef.current.scrollLeft = targetScroll;
+              }
+          });
+      }
+  }, [playbackState.currentTime]);
   
   // --- Undo/Redo System ---
   const pushHistory = useCallback((newTracks: Track[], newClips: AudioClip[]) => {
@@ -243,8 +267,9 @@ function App() {
           audioService.disableMonitoring();
       } else {
           try {
-              setArmedTrackId(trackId);
+              // Critical: Await monitoring setup BEFORE updating state to ensure visualizer is ready
               await audioService.enableMonitoring(trackId); 
+              setArmedTrackId(trackId);
           } catch(e) {
               alert("Could not access microphone.");
               setArmedTrackId(null);
@@ -263,17 +288,32 @@ function App() {
           try {
             await audioService.resume();
 
-            // Count-In Logic
+            // 1. Start Recording Physically FIRST to capture pre-roll/setup
+            await audioService.startRecording();
+            const sysRecordStart = audioService.getContext().currentTime;
+
+            // 2. Count-In Logic (if enabled)
             if (countInMeasures > 0) {
                  await audioService.playCountIn(bpm, countInMeasures);
+            } else {
+                 // Even without count-in, wait a tiny bit to ensure we capture the transient of the first beat
+                 await new Promise(r => setTimeout(r, 100));
             }
+            
+            // 3. Start Playback Transport
+            const sysPlaybackStart = audioService.getContext().currentTime;
+            
+            // Calculate how much audio we captured before the transport actually started
+            const preRollDuration = sysPlaybackStart - sysRecordStart;
 
-            audioService.startRecording();
             setIsRecording(true);
             recordStartTimeRef.current = pauseTimeRef.current;
+            recordPreRollRef.current = preRollDuration;
+            
             startPlayback(pauseTimeRef.current);
           } catch(e) {
-              console.error(e);
+              console.error("Recording failed to start", e);
+              alert("Failed to start recording. Please check microphone permissions.");
           }
       }
   };
@@ -284,24 +324,52 @@ function App() {
           return;
       }
       const blob = await audioService.stopRecording();
-      const startTime = recordStartTimeRef.current;
-      if (blob) {
+      const timelineStart = recordStartTimeRef.current;
+      const preRoll = recordPreRollRef.current;
+      
+      if (blob && blob.size > 0) {
           try {
               const buffer = await audioService.decodeBlob(blob);
+              
+              // --- Latency Compensation & Placement ---
+              const latency = audioService.latencySeconds;
+              
+              // The buffer contains [PreRoll] + [Performance].
+              // The Performance started at buffer time = preRoll + latency (approx).
+              // We want this point to align with `timelineStart`.
+              
+              // Theoretical Offset into buffer for T=timelineStart
+              let targetOffset = preRoll + latency;
+              
+              // Safety: Reveal a bit of the pre-roll to catch early transients (rushing).
+              // We shift the clip START TIME back by `safetyMargin` and reduce OFFSET by same amount.
+              const safetyMargin = Math.min(preRoll, 0.2); // Up to 200ms
+              
+              const finalClipStart = timelineStart - safetyMargin;
+              const finalClipOffset = targetOffset - safetyMargin;
+
+              // Duration needs to be calculated based on what's left in the buffer
+              // Buffer Duration - Offset = Playable Length
+              // But we added safetyMargin to length by reducing offset.
+              const finalDuration = Math.max(0, buffer.duration - finalClipOffset);
+
               const newClip: AudioClip = {
                   id: uuidv4(),
                   trackId: armedTrackId,
                   buffer: buffer,
                   name: 'Recording',
-                  startTime: startTime,
-                  duration: buffer.duration,
-                  offset: 0,
+                  startTime: finalClipStart, // Can be negative or < timelineStart
+                  duration: finalDuration,
+                  offset: Math.max(0, finalClipOffset),
                   gain: 1,
                   pan: 0,
                   playbackRate: 1,
                   loop: false
               };
-              updateStateWithHistory(tracks, [...clips, newClip]);
+              
+              if (finalDuration > 0) {
+                  updateStateWithHistory(tracks, [...clips, newClip]);
+              }
           } catch (e) {
               console.error("Failed to process recording", e);
           }
@@ -402,10 +470,18 @@ function App() {
     }
   };
 
-  const updateClip = (id: string, newTime: number, newTrackId?: string) => {
-    if (newTrackId === 'master') return;
-    const newClips = clips.map(c => c.id === id ? { ...c, startTime: newTime, trackId: newTrackId || c.trackId } : c);
-    setClips(newClips);
+  // Batch Update for moving multiple clips
+  const updateClips = (updates: { id: string, startTime: number, trackId?: string }[]) => {
+      const newClips = clips.map(c => {
+          const update = updates.find(u => u.id === c.id);
+          if (update) {
+              // Prevent moving to master track
+              if (update.trackId === 'master') return c;
+              return { ...c, startTime: update.startTime, trackId: update.trackId || c.trackId };
+          }
+          return c;
+      });
+      setClips(newClips);
   };
   
   const updateClipProps = (id: string, updates: Partial<AudioClip>) => {
@@ -419,22 +495,63 @@ function App() {
       setClips(newClips);
   };
 
-  const deleteClip = (id: string) => {
-      const newClips = clips.filter(c => c.id !== id);
-      if (selectedClipId === id) setSelectedClipId(null);
+  // --- Batch Operations (Delete, Duplicate, Copy, Paste) ---
+
+  const deleteClips = (ids: string[]) => {
+      const newClips = clips.filter(c => !ids.includes(c.id));
+      setSelectedClipIds([]);
       updateStateWithHistory(tracks, newClips);
   };
 
-  const duplicateClip = (id: string) => {
-      const original = clips.find(c => c.id === id);
-      if (!original) return;
-      const newClip: AudioClip = {
-          ...original,
-          id: uuidv4(),
-          startTime: original.startTime + original.duration,
-          name: `${original.name} (Copy)`
-      };
-      updateStateWithHistory(tracks, [...clips, newClip]);
+  const duplicateClips = (ids: string[]) => {
+      const clipsToDuplicate = clips.filter(c => ids.includes(c.id));
+      if (clipsToDuplicate.length === 0) return;
+
+      const newClips = [...clips];
+      const newIds: string[] = [];
+
+      clipsToDuplicate.forEach(original => {
+          const newId = uuidv4();
+          newIds.push(newId);
+          newClips.push({
+              ...original,
+              id: newId,
+              // Per user request: Place immediately after original
+              startTime: original.startTime + original.duration, 
+              name: `${original.name} (Copy)`
+          });
+      });
+
+      updateStateWithHistory(tracks, newClips);
+      setSelectedClipIds(newIds);
+  };
+  
+  const handleFlattenClip = async (id: string) => {
+      const clip = clips.find(c => c.id === id);
+      if (!clip) return;
+      
+      try {
+          const newBuffer = await audioService.bounceClip(clip);
+          const newClip: AudioClip = {
+              ...clip,
+              buffer: newBuffer,
+              offset: 0,
+              duration: clip.duration, 
+              playbackRate: 1, 
+              name: `${clip.name} (Flattened)`,
+              loop: false 
+          };
+          
+          const newClips = clips.map(c => c.id === id ? newClip : c);
+          updateStateWithHistory(tracks, newClips);
+          // Keep selection
+          if (selectedClipIds.includes(id)) {
+              // no-op, still selected
+          }
+      } catch (e) {
+          console.error("Flatten failed", e);
+          alert("Could not flatten clip.");
+      }
   };
 
   const renameClip = (id: string, newName: string) => {
@@ -454,24 +571,45 @@ function App() {
 
       const newClips = clips.filter(c => c.id !== clipId);
       newClips.push(leftClip, rightClip);
+      
+      // Update selection to the new clips if original was selected
+      if (selectedClipIds.includes(clipId)) {
+          setSelectedClipIds([leftClip.id, rightClip.id]);
+      }
+      
       updateStateWithHistory(tracks, newClips);
   };
   
-  const handleCopyClip = (id: string) => {
-      const clip = clips.find(c => c.id === id);
-      if (clip) setClipboardClip(clip);
+  const handleCopyClips = (ids: string[]) => {
+      const selected = clips.filter(c => ids.includes(c.id));
+      if (selected.length > 0) setClipboardClips(selected);
   };
   
-  const handlePasteClip = (time: number, trackId: string) => {
-      if (!clipboardClip || trackId === 'master') return;
-      const newClip: AudioClip = {
-          ...clipboardClip,
-          id: uuidv4(),
-          startTime: time,
-          trackId: trackId,
-          name: `${clipboardClip.name} (Paste)`
-      };
-      updateStateWithHistory(tracks, [...clips, newClip]);
+  const handlePasteClips = (time: number, targetTrackId: string) => {
+      if (clipboardClips.length === 0 || targetTrackId === 'master') return;
+      
+      // Calculate relative offsets based on the earliest clip in clipboard
+      const minStartTime = Math.min(...clipboardClips.map(c => c.startTime));
+      
+      const newClips = [...clips];
+      const newIds: string[] = [];
+
+      clipboardClips.forEach(clip => {
+          const relativeTime = clip.startTime - minStartTime;
+          const newId = uuidv4();
+          newIds.push(newId);
+          
+          newClips.push({
+              ...clip,
+              id: newId,
+              startTime: time + relativeTime,
+              trackId: targetTrackId, // Collapse to the track where user right-clicked for now
+              name: `${clip.name} (Paste)`
+          });
+      });
+      
+      updateStateWithHistory(tracks, newClips);
+      setSelectedClipIds(newIds);
   };
   
   const handleLoopToggle = (id: string) => {
@@ -505,10 +643,44 @@ function App() {
       }
   };
 
+  const handleExportStems = async () => {
+      setIsExporting(true);
+      if (playbackState.isPlaying) handleStop();
+      try {
+          for (const track of tracks) {
+             if (track.isMaster) continue;
+             const trackClips = clips.filter(c => c.trackId === track.id);
+             if (trackClips.length === 0) continue;
+
+             const blob = await audioService.renderOffline(trackClips, [track, MASTER_TRACK]);
+             
+             const url = URL.createObjectURL(blob);
+             const a = document.createElement('a');
+             a.href = url;
+             a.download = `${track.name}_Stem.wav`;
+             a.click();
+             URL.revokeObjectURL(url);
+             
+             await new Promise(r => setTimeout(r, 500));
+          }
+      } catch (e) {
+          console.error("Stem Export failed", e);
+          alert("Stem Export failed.");
+      } finally {
+          setIsExporting(false);
+          setIsSettingsOpen(false);
+      }
+  };
+
   // --- Derived State & Variables ---
   const regularTracks = tracks.filter(t => !t.isMaster);
   const masterTrack = tracks.find(t => t.isMaster) || MASTER_TRACK;
-  const selectedClip = clips.find(c => c.id === selectedClipId) || null;
+  
+  // Only show editor if exactly one clip is selected
+  const selectedClip = selectedClipIds.length === 1 
+      ? clips.find(c => c.id === selectedClipIds[0]) || null
+      : null;
+      
   const editingTrack = tracks.find(t => t.id === editingTrackId) || null;
 
   const totalDuration = Math.max(300, ...clips.map(c => c.startTime + c.duration));
@@ -520,6 +692,12 @@ function App() {
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-gray-950 text-white font-sans selection:bg-purple-500/30">
+      <SettingsModal 
+          isOpen={isSettingsOpen} 
+          onClose={() => setIsSettingsOpen(false)}
+          onExportStems={handleExportStems}
+      />
+
       <Transport 
         isPlaying={playbackState.isPlaying}
         onPlay={handlePlay}
@@ -530,11 +708,13 @@ function App() {
         onRecord={handleTransportRecord}
         currentTime={playbackState.currentTime}
         bpm={bpm}
-        setBpm={setBpm}
+        setBpm={(newBpm) => {
+            setBpm(newBpm);
+        }}
         tool={tool}
         setTool={setTool}
         zoom={zoom}
-        setZoom={setZoom}
+        setZoom={handleZoomChange}
         snap={snap}
         setSnap={setSnap}
         onUndo={handleUndo}
@@ -549,88 +729,103 @@ function App() {
         toggleMetronome={() => setIsMetronomeOn(!isMetronomeOn)}
         countInMeasures={countInMeasures}
         setCountInMeasures={setCountInMeasures}
+        onOpenSettings={() => setIsSettingsOpen(true)}
       />
 
-      {/* Main Workspace: Tracks & Timeline */}
-      <div className="flex flex-1 overflow-hidden relative border-b border-gray-800">
-        {/* Track Headers */}
-        <div 
-            ref={trackHeaderRef}
-            className="flex-shrink-0 bg-gray-900 border-r border-gray-700 overflow-y-hidden z-10 shadow-xl"
-            style={{ width: TRACK_HEADER_WIDTH }}
-        >
-          {/* Spacer to align with Timeline Ruler */}
-          <div 
-             className="flex-shrink-0 border-b border-gray-700 bg-gray-900 box-border sticky top-0 z-20"
-             style={{ height: `${TIMELINE_RULER_HEIGHT}px` }}
-          />
-
-          {regularTracks.map(track => (
-            <TrackControl 
-              key={track.id} 
-              track={track} 
-              onUpdate={updateTrack}
-              onDelete={deleteTrack}
-              isArmed={armedTrackId === track.id}
-              isRecordingGlobal={isRecording}
-              onArmToggle={() => handleArmTrack(track.id)}
-              onOpenEditor={setEditingTrackId}
-              onToggleAutomation={toggleAutomation}
-            />
-          ))}
-          <div className="p-3">
-             <button 
-                onClick={addTrack}
-                className="w-full py-3 border border-dashed border-gray-700 rounded-lg text-gray-500 hover:text-white hover:border-gray-500 hover:bg-gray-800 flex items-center justify-center gap-2 text-sm transition-all group"
-                title="Add a new audio track"
-             >
-                <div className="p-1 rounded bg-gray-800 group-hover:bg-gray-700 transition-colors"><Plus size={14} /></div>
-                <span>Add Track</span>
-             </button>
-          </div>
-        </div>
-
-        {/* Timeline (Scrollbar hidden via CSS in Timeline.tsx) */}
-        <div className="flex-1 overflow-hidden relative flex flex-col">
+      {/* Main Workspace: Single Unified Scroll Container */}
+      <div 
+        className="flex-1 overflow-auto relative" 
+        ref={scrollContainerRef}
+        onScroll={handleMainScroll}
+      >
+        <div className="flex min-w-max">
+            {/* Sticky Left Column (Headers) */}
             <div 
-                ref={timelineRef}
-                onScroll={handleTimelineScroll}
-                className="flex-1 overflow-auto custom-scrollbar-hidden" // Class to hide scrollbar
+                className="sticky left-0 z-30 bg-gray-900 border-r border-gray-700 flex flex-col flex-shrink-0 shadow-lg"
+                style={{ width: TRACK_HEADER_WIDTH }}
             >
+                 {/* Sticky Top-Left Corner */}
+                 <div 
+                    className="sticky top-0 z-40 bg-gray-900 border-b border-gray-700 flex-shrink-0"
+                    style={{ height: TIMELINE_RULER_HEIGHT }}
+                 />
+                 
+                 {/* Track Headers List */}
+                 {regularTracks.map(track => (
+                    <TrackControl 
+                        key={track.id} 
+                        track={track} 
+                        onUpdate={updateTrack}
+                        onDelete={deleteTrack}
+                        isArmed={armedTrackId === track.id}
+                        isRecordingGlobal={isRecording}
+                        onArmToggle={() => handleArmTrack(track.id)}
+                        onOpenEditor={setEditingTrackId}
+                        onToggleAutomation={toggleAutomation}
+                    />
+                 ))}
+                 
+                 <div className="p-3">
+                     <button 
+                        onClick={addTrack}
+                        className="w-full py-3 border border-dashed border-gray-700 rounded-lg text-gray-500 hover:text-white hover:border-gray-500 hover:bg-gray-800 flex items-center justify-center gap-2 text-sm transition-all group"
+                        title="Add a new audio track"
+                     >
+                        <div className="p-1 rounded bg-gray-800 group-hover:bg-gray-700 transition-colors"><Plus size={14} /></div>
+                        <span>Add Track</span>
+                     </button>
+                 </div>
+                 
+                 {/* Bottom Spacer */}
+                 <div className="h-64 bg-gray-900" />
+            </div>
+
+            {/* Main Timeline Area (Scrolls with parent) */}
+            <div className="flex flex-col flex-1">
+                {/* Timeline Component - renders Ruler (sticky inside) and Tracks */}
                 <Timeline 
                     tracks={regularTracks}
                     clips={clips}
                     currentTime={playbackState.currentTime}
-                    onClipUpdate={updateClip}
+                    onClipsUpdate={updateClips} // Batch update
                     onFileDrop={handleFileDrop}
                     setClips={setClips}
                     onSeek={handleSeek}
                     bpm={bpm}
                     zoom={zoom}
-                    setZoom={setZoom}
+                    setZoom={handleZoomChange}
                     snap={snap}
                     tool={tool}
-                    onDeleteClip={deleteClip}
-                    onDuplicateClip={duplicateClip}
+                    
+                    selectedClipIds={selectedClipIds}
+                    setSelectedClipIds={setSelectedClipIds}
+                    
+                    onDeleteClips={deleteClips}
+                    onDuplicateClips={duplicateClips}
+                    onCopyClips={handleCopyClips}
+                    onPasteClips={handlePasteClips}
+                    canPaste={clipboardClips.length > 0}
+                    
                     onRenameClip={renameClip}
                     onSplitClip={handleSplitClip}
                     onAddAutomationPoint={handleAddAutomationPoint}
-                    onSelectClip={(id) => { setSelectedClipId(id); if (id) setEditingTrackId(null); }}
-                    selectedClipId={selectedClipId}
-                    onCopyClip={handleCopyClip}
-                    onPasteClip={handlePasteClip}
-                    canPaste={!!clipboardClip}
-                    onLoopClip={handleLoopToggle}
                     onClipResize={handleClipResize}
+                    onLoopClip={handleLoopToggle}
+                    onFlattenClip={handleFlattenClip}
+                    
                     loopRegion={loopRegion}
                     setLoopRegion={setLoopRegion}
+                    onImportAudio={handleFileDrop}
+                    markers={timeMarkers}
+                    onAddMarker={(time, label, type, value) => setTimeMarkers([...timeMarkers, {time, label, type, value}])}
+                    setBpm={setBpm}
                 />
             </div>
         </div>
       </div>
 
       {/* Fixed Bottom Master Section */}
-      <div className="h-44 bg-gray-900 border-t-2 border-gray-800 flex flex-col z-20 shadow-[0_-5px_15px_rgba(0,0,0,0.5)]">
+      <div className="h-44 bg-gray-900 border-t-2 border-gray-800 flex flex-col z-50 shadow-[0_-5px_15px_rgba(0,0,0,0.5)]">
          {/* Master Row */}
          <div className="flex flex-1 overflow-hidden">
              {/* Master Control (Left) */}
@@ -660,7 +855,7 @@ function App() {
                 className="w-full h-full overflow-x-auto overflow-y-hidden custom-scrollbar"
                 title="Timeline Navigator"
              >
-                <div style={{ width: timelineWidth, height: '1px' }}></div>
+                <div style={{ width: timelineWidth + TRACK_HEADER_WIDTH, height: '1px' }}></div>
              </div>
          </div>
       </div>
@@ -676,7 +871,8 @@ function App() {
           <ClipEditor 
             clip={selectedClip} 
             onUpdate={updateClipProps} 
-            onClose={() => setSelectedClipId(null)}
+            onClose={() => setSelectedClipIds([])}
+            projectBpm={bpm}
           />
       )}
     </div>

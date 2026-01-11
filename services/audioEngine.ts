@@ -33,14 +33,20 @@ class AudioEngine {
   private recordingChunks: Blob[] = [];
   private recordingStream: MediaStream | null = null;
   
-  // Monitoring
+  // Monitoring & Devices
   private monitorStream: MediaStream | null = null;
   private monitorSource: MediaStreamAudioSourceNode | null = null;
   private monitorAnalyser: AnalyserNode | null = null;
+  private monitorGain: GainNode | null = null;
   private monitorTrackId: string | null = null;
+  
+  private currentInputDeviceId: string = 'default';
+  public latencySeconds: number = 0.025; // Default 25ms manual offset
 
   constructor() {
-    this.context = new (window.AudioContext || (window as any).webkitAudioContext)();
+    this.context = new (window.AudioContext || (window as any).webkitAudioContext)({
+        latencyHint: 'interactive'
+    });
     
     this.masterFader = this.context.createGain();
     this.masterAnalyser = this.context.createAnalyser();
@@ -64,6 +70,46 @@ class AudioEngine {
     }
   }
 
+  // --- Device Management ---
+
+  public async getAvailableDevices() {
+      // Ensure we have permissions first to get labels
+      try {
+        await navigator.mediaDevices.getUserMedia({ audio: true }).then(s => s.getTracks().forEach(t => t.stop()));
+      } catch (e) {
+          console.warn("Could not get permission for enumerating devices");
+      }
+      
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      return {
+          inputs: devices.filter(d => d.kind === 'audioinput'),
+          outputs: devices.filter(d => d.kind === 'audiooutput')
+      };
+  }
+
+  public setInputDevice(deviceId: string) {
+      this.currentInputDeviceId = deviceId;
+      // If currently monitoring, restart stream
+      if (this.monitorStream) {
+          const trackId = this.monitorTrackId;
+          this.disableMonitoring();
+          if (trackId) this.enableMonitoring(trackId);
+      }
+  }
+
+  public async setOutputDevice(deviceId: string) {
+      // Experimental: setSinkId
+      if ('setSinkId' in this.context.destination) {
+          try {
+              await (this.context.destination as any).setSinkId(deviceId);
+          } catch (e) {
+              console.error("Failed to set output device", e);
+          }
+      } else {
+          console.warn("Output device selection not supported in this browser");
+      }
+  }
+
   public async loadFile(file: File): Promise<AudioBuffer> {
     const arrayBuffer = await file.arrayBuffer();
     return await this.context.decodeAudioData(arrayBuffer);
@@ -74,7 +120,7 @@ class AudioEngine {
     return await this.context.decodeAudioData(arrayBuffer);
   }
 
-  // --- Metronome ---
+  // --- Metronome & Calibration ---
   public scheduleMetronome(bpm: number, startTime: number, duration: number = 600) {
       const beatDuration = 60 / bpm;
       const totalBeats = Math.floor(duration / beatDuration);
@@ -88,20 +134,30 @@ class AudioEngine {
           const time = startTime + (i * beatDuration);
           const isDownbeat = i % 4 === 0;
           
-          const osc = this.context.createOscillator();
-          osc.type = 'sine';
-          osc.frequency.value = isDownbeat ? 1000 : 800;
-          
-          const envelope = this.context.createGain();
-          envelope.gain.setValueAtTime(1, time);
-          envelope.gain.exponentialRampToValueAtTime(0.001, time + 0.1);
-          
-          osc.connect(envelope);
-          envelope.connect(metronomeGain);
-          
-          osc.start(time);
-          osc.stop(time + 0.1);
-          
+          this.playClick(time, isDownbeat, metronomeGain);
+      }
+  }
+
+  public playClick(time: number, isHigh: boolean = false, destination: AudioNode = this.context.destination) {
+      const osc = this.context.createOscillator();
+      osc.type = 'square';
+      osc.frequency.value = isHigh ? 1000 : 800;
+      
+      const envelope = this.context.createGain();
+      envelope.gain.setValueAtTime(0, time);
+      envelope.gain.linearRampToValueAtTime(1, time + 0.001);
+      envelope.gain.exponentialRampToValueAtTime(0.001, time + 0.1);
+      
+      osc.connect(envelope);
+      envelope.connect(destination);
+      
+      osc.start(time);
+      osc.stop(time + 0.1);
+      
+      if (destination === this.context.destination) {
+          // Track ephemeral nodes if not part of main metronome loop
+          // (In a real engine we'd manage this better, for now we let GC handle oneshots)
+      } else {
           this.metronomeNodes.push(osc);
           this.metronomeNodes.push(envelope);
       }
@@ -189,6 +245,7 @@ class AudioEngine {
       try {
           this.monitorStream = await navigator.mediaDevices.getUserMedia({ 
               audio: { 
+                  deviceId: this.currentInputDeviceId !== 'default' ? { exact: this.currentInputDeviceId } : undefined,
                   echoCancellation: false, 
                   autoGainControl: false, 
                   noiseSuppression: false,
@@ -200,15 +257,14 @@ class AudioEngine {
           this.monitorAnalyser = this.context.createAnalyser();
           this.monitorAnalyser.fftSize = 256;
           this.monitorAnalyser.smoothingTimeConstant = 0.8;
-          
-          const trackNodes = this.trackNodes.get(trackId);
-          if (trackNodes) {
-              this.monitorSource.connect(this.monitorAnalyser);
-              // Route to track input so the user can hear the effects (and potentially feedback if using speakers!)
-              // For a safer implementation in a browser, one might avoid connecting to destination
-              // but for this app it seems intended for monitoring.
-              this.monitorAnalyser.connect(trackNodes.input); 
-          }
+
+          // Create a mute gain node to keep the graph active without feedback
+          this.monitorGain = this.context.createGain();
+          this.monitorGain.gain.value = 0;
+
+          this.monitorSource.connect(this.monitorAnalyser);
+          this.monitorAnalyser.connect(this.monitorGain);
+          this.monitorGain.connect(this.context.destination);
           
           this.monitorTrackId = trackId;
       } catch (err) {
@@ -225,6 +281,10 @@ class AudioEngine {
       if (this.monitorAnalyser) {
           this.monitorAnalyser.disconnect();
           this.monitorAnalyser = null;
+      }
+      if (this.monitorGain) {
+          this.monitorGain.disconnect();
+          this.monitorGain = null;
       }
       if (this.monitorStream) {
           this.monitorStream.getTracks().forEach(t => t.stop());
@@ -653,6 +713,32 @@ class AudioEngine {
       this.stop();
   }
 
+  // --- Bounce / Flatten ---
+  
+  public async bounceClip(clip: AudioClip): Promise<AudioBuffer> {
+      // The duration of the new buffer matches the timeline duration of the clip
+      const duration = clip.duration;
+      const sampleRate = this.context.sampleRate;
+      
+      const offlineCtx = new OfflineAudioContext(2, duration * sampleRate, sampleRate);
+      
+      const source = offlineCtx.createBufferSource();
+      source.buffer = clip.buffer;
+      source.playbackRate.value = clip.playbackRate;
+      
+      // Calculate start offset in buffer time (seconds)
+      const offset = clip.offset;
+      
+      // Schedule to play EXACTLY what is audible
+      // Note: playbackRate affects how fast we consume the buffer.
+      // To fill 'duration' seconds of output at rate 'R', we need 'duration * R' seconds of source.
+      
+      source.connect(offlineCtx.destination);
+      source.start(0, offset, duration * clip.playbackRate);
+      
+      return await offlineCtx.startRendering();
+  }
+
   // --- Export / Render ---
 
   public async renderOffline(clips: AudioClip[], tracks: Track[]): Promise<Blob> {
@@ -765,8 +851,20 @@ class AudioEngine {
 
   public async startRecording(): Promise<void> {
     try {
-        this.recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        this.mediaRecorder = new MediaRecorder(this.recordingStream);
+        // Reuse monitor stream if available to avoid hardware conflict
+        let stream = this.monitorStream;
+        
+        if (!stream) {
+            console.log("No monitor stream found, requesting new stream");
+            this.recordingStream = await navigator.mediaDevices.getUserMedia({ 
+                audio: {
+                    deviceId: this.currentInputDeviceId !== 'default' ? { exact: this.currentInputDeviceId } : undefined
+                } 
+            });
+            stream = this.recordingStream;
+        }
+
+        this.mediaRecorder = new MediaRecorder(stream);
         this.recordingChunks = [];
         this.mediaRecorder.ondataavailable = (e) => {
             if (e.data.size > 0) this.recordingChunks.push(e.data);
@@ -787,6 +885,8 @@ class AudioEngine {
         this.mediaRecorder.onstop = () => {
             const blob = new Blob(this.recordingChunks, { type: 'audio/webm' });
             this.recordingChunks = [];
+            
+            // Only stop the stream if we created it locally (not monitoring)
             if (this.recordingStream) {
                 this.recordingStream.getTracks().forEach(track => track.stop());
                 this.recordingStream = null;

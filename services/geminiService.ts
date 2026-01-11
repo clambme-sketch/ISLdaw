@@ -43,8 +43,21 @@ export const analyzeAudioStructure = async (base64Audio: string): Promise<string
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     
-    // Extract actual base64 data if it contains the data URL prefix
-    const data = base64Audio.includes('base64,') ? base64Audio.split('base64,')[1] : base64Audio;
+    // Extract actual base64 data and mime type if it contains the data URL prefix
+    let mimeType = 'audio/mp3';
+    let data = base64Audio;
+    
+    if (base64Audio.includes('base64,')) {
+        const parts = base64Audio.split('base64,');
+        data = parts[1];
+        
+        // Extract mime from "data:audio/mp3;base64"
+        const header = parts[0];
+        const match = header.match(/:(.*?);/);
+        if (match) {
+            mimeType = match[1];
+        }
+    }
     
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash-native-audio-preview-12-2025',
@@ -52,7 +65,7 @@ export const analyzeAudioStructure = async (base64Audio: string): Promise<string
         parts: [
           {
             inlineData: {
-              mimeType: 'audio/mp3', 
+              mimeType: mimeType, 
               data: data
             }
           },
