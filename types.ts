@@ -1,3 +1,4 @@
+
 export interface Track {
   id: string;
   name: string;
@@ -5,6 +6,18 @@ export interface Track {
   volume: number; // 0.0 to 1.0
   muted: boolean;
   soloed: boolean;
+  plugins: AudioPlugin[];
+  isMaster?: boolean;
+  // Key is the parameter ID (e.g., 'volume', 'pan', 'pluginId:paramName')
+  automation: Record<string, AutomationPoint[]>; 
+  showAutomation?: boolean; 
+  selectedAutomationId?: string; // Which lane is currently visible/editable
+}
+
+export interface AutomationPoint {
+  id: string;
+  time: number; 
+  value: number; // Normalized 0-1
 }
 
 export interface AudioClip {
@@ -12,9 +25,14 @@ export interface AudioClip {
   trackId: string;
   buffer: AudioBuffer;
   name: string;
-  startTime: number; // Start time in seconds on the timeline
-  duration: number; // Duration in seconds
-  offset: number; // Start offset within the audio file (trimming start)
+  startTime: number; 
+  duration: number; 
+  offset: number; 
+  
+  gain: number; 
+  pan: number; 
+  playbackRate: number; 
+  loop: boolean;
 }
 
 export enum DragType {
@@ -24,11 +42,35 @@ export enum DragType {
 
 export interface DragItem {
   type: DragType;
-  id?: string; // If moving an existing clip
-  files?: FileList; // If dropping external files
+  id?: string; 
+  files?: FileList; 
 }
 
 export interface PlaybackState {
   isPlaying: boolean;
-  currentTime: number; // Current playback time in seconds
+  currentTime: number; 
+}
+
+export type PluginType = 'DELAY' | 'REVERB' | 'DISTORTION' | 'HIGHPASS' | 'LOWPASS';
+
+export interface AudioPlugin {
+  id: string;
+  type: PluginType;
+  enabled: boolean;
+  params: {
+    [key: string]: number;
+  };
+}
+
+export type ToolType = 'MOVE' | 'BLADE';
+
+export interface HistoryState {
+  tracks: Track[];
+  clips: AudioClip[];
+}
+
+export interface LoopRegion {
+  start: number;
+  end: number;
+  enabled: boolean;
 }

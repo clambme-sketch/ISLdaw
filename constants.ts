@@ -1,7 +1,12 @@
+
 export const PIXELS_PER_SECOND = 50;
 export const HEADER_HEIGHT = 64;
 export const TRACK_HEADER_WIDTH = 250;
-export const TIMELINE_RULER_HEIGHT = 30;
+export const TIMELINE_RULER_HEIGHT = 32;
+
+// Strict layout constants for alignment
+export const TRACK_HEIGHT = 110; 
+export const AUTOMATION_HEIGHT = 80;
 
 export const TRACK_COLORS = [
   '#3b82f6', // blue

@@ -1,3 +1,4 @@
+
 import React, { useRef, useLayoutEffect } from 'react';
 import { AudioClip } from '../types';
 
@@ -21,19 +22,13 @@ export const Waveform: React.FC<WaveformProps> = ({ clip, width, height, color }
     // Clear canvas
     ctx.clearRect(0, 0, width, height);
     
-    // Draw styles
-    ctx.fillStyle = color;
-    
     // Get raw audio data (PCM)
-    // We usually just use channel 0 for visualization
     const data = clip.buffer.getChannelData(0);
+    const gain = clip.gain;
     
     // Algorithm: Downsample data to fit canvas width
-    // We want to draw one vertical bar (or point) per pixel of width
     const step = Math.ceil(data.length / width);
     const amp = height / 2;
-    
-    ctx.beginPath();
     
     for (let i = 0; i < width; i++) {
         let min = 1.0;
@@ -52,13 +47,27 @@ export const Waveform: React.FC<WaveformProps> = ({ clip, width, height, color }
             max = 0;
         }
 
-        // Draw a vertical line from min to max amplitude at this x-pixel
-        // Center of height is 0 amplitude
+        // Apply Gain to amplitude
+        min *= gain;
+        max *= gain;
+
+        // Check for clipping (exceeding -1.0 to 1.0 range)
+        const isClipping = max > 1.0 || min < -1.0;
+        
+        // Set color: Red if clipping, otherwise prop color
+        ctx.fillStyle = isClipping ? '#ef4444' : color;
+
+        // Calculate Y positions
+        // Audio Range [-1, 1] maps to [0, height] 
+        // Note: This simple mapping puts +1 at bottom (height), -1 at top (0)
+        // Usually fine for visual symmetry.
         const yLow = (1 + min) * amp;
         const yHigh = (1 + max) * amp;
         
-        // Use rect for pixel-perfect bars
-        ctx.fillRect(i, yLow, 1, Math.max(1, yHigh - yLow));
+        // Ensure bar has at least 1px height
+        const barHeight = Math.max(1, yHigh - yLow);
+        
+        ctx.fillRect(i, yLow, 1, barHeight);
     }
   }, [clip, width, height, color]);
 
