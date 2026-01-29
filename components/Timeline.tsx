@@ -119,6 +119,10 @@ export const Timeline: React.FC<TimelineProps> = ({
   // Keep track of the initial offset for ALL selected clips during a drag
   const [dragOffsets, setDragOffsets] = useState<{ [id: string]: number }>({});
   
+  // Ruler Zoom Drag State
+  const [rulerDrag, setRulerDrag] = useState<{startY: number, initialZoom: number} | null>(null);
+  const isRulerDraggingRef = useRef(false);
+
   // Marquee State
   const [marquee, setMarquee] = useState<MarqueeState | null>(null);
   const justFinishedMarqueeRef = useRef(false);
@@ -149,10 +153,30 @@ export const Timeline: React.FC<TimelineProps> = ({
   const barsArray = useMemo(() => Array.from({ length: totalBars }), [totalBars, zoom, bpm]);
 
   const snapToGrid = (time: number): number => {
-      if (!snap) return time;
+      // Always snap if enabled, caller handles the check
       const beat = 60 / bpm;
+      // Round to nearest beat
       return Math.round(time / beat) * beat;
   };
+
+  // --- Keyboard Shortcuts (Delete) ---
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+        // Prevent deletion if user is typing in an input
+        const target = e.target as HTMLElement;
+        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+
+        if (e.key === 'Backspace' || e.key === 'Delete') {
+            if (selectedClipIds.length > 0) {
+                e.preventDefault();
+                onDeleteClips(selectedClipIds);
+            }
+        }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedClipIds, onDeleteClips]);
 
   useEffect(() => {
       const closeMenu = () => setContextMenu(null);
@@ -166,6 +190,13 @@ export const Timeline: React.FC<TimelineProps> = ({
                setResizeEdge(null);
            }
            if (loopDragType) setLoopDragType(null);
+           if (rulerDrag) {
+               setRulerDrag(null);
+               // Reset the ref after a short delay so onClick knows we just finished dragging
+               setTimeout(() => {
+                   isRulerDraggingRef.current = false;
+               }, 50);
+           }
            if (marquee?.active) {
                setMarquee(null);
                // Set a flag to prevent the subsequent 'click' event from clearing selection
@@ -173,19 +204,51 @@ export const Timeline: React.FC<TimelineProps> = ({
                setTimeout(() => { justFinishedMarqueeRef.current = false; }, 100);
            }
       };
+
+      // Stop dragging actions if the mouse leaves the document window to prevent stuck states
+      const handleMouseLeave = () => {
+          if (rulerDrag) {
+              setRulerDrag(null);
+              isRulerDraggingRef.current = false;
+          }
+          if (draggedClipId) {
+              setDraggedClipId(null);
+              setDragOffsets({});
+          }
+          if (resizingClipId) {
+              setResizingClipId(null);
+              setResizeEdge(null);
+          }
+          if (loopDragType) setLoopDragType(null);
+      };
       
       window.addEventListener('click', closeMenu);
       window.addEventListener('mouseup', handleGlobalMouseUp);
+      document.addEventListener('mouseleave', handleMouseLeave);
       
       return () => {
           window.removeEventListener('click', closeMenu);
           window.removeEventListener('mouseup', handleGlobalMouseUp);
+          document.removeEventListener('mouseleave', handleMouseLeave);
       };
-  }, [draggedClipId, resizingClipId, loopDragType, marquee]);
+  }, [draggedClipId, resizingClipId, loopDragType, marquee, rulerDrag]);
 
   // Global Mouse Move
   useEffect(() => {
       const handleMouseMove = (e: MouseEvent) => {
+          // Ruler Zoom Drag Logic
+          if (rulerDrag && setZoom) {
+              const deltaY = e.clientY - rulerDrag.startY;
+              if (Math.abs(deltaY) > 3) isRulerDraggingRef.current = true;
+
+              // Drag Down (+Y) -> Zoom In. Drag Up (-Y) -> Zoom Out.
+              // Sensitivity: 1px = 1% change roughly
+              const factor = 1 + (deltaY * 0.005);
+              const newZoom = Math.max(10, Math.min(500, rulerDrag.initialZoom * factor));
+              setZoom(newZoom);
+              return;
+          }
+
           if (!timelineRef.current) return;
           const rect = timelineRef.current.getBoundingClientRect();
           const relativeX = e.clientX - rect.left + timelineRef.current.scrollLeft;
@@ -264,9 +327,6 @@ export const Timeline: React.FC<TimelineProps> = ({
                  if (snap) newDuration = snapToGrid(resizeStartValues.startTime + newDuration) - resizeStartValues.startTime;
              } else {
                  // Adjusting left edge: changes start time, duration, AND offset
-                 // We need to limit so duration > 0.05 and offset >= 0
-                 
-                 // How much we WANT to change start time
                  let desiredDelta = diffSeconds;
                  if (snap) {
                       const snappedNewStart = snapToGrid(resizeStartValues.startTime + diffSeconds);
@@ -278,10 +338,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                      desiredDelta = resizeStartValues.duration - 0.05;
                  }
                  
-                 // Constrain: Don't let offset go below 0 (can't extend before beginning of file)
-                 // Note: newOffset = startOffset + (delta * rate)
-                 // So delta * rate >= -startOffset
-                 // delta >= -startOffset / rate
+                 // Constrain: Don't let offset go below 0
                  const minDelta = -resizeStartValues.offset / clip.playbackRate;
                  if (desiredDelta < minDelta) {
                      desiredDelta = minDelta;
@@ -299,11 +356,11 @@ export const Timeline: React.FC<TimelineProps> = ({
           }
       };
 
-      if (resizingClipId || loopDragType || marquee?.active) {
+      if (resizingClipId || loopDragType || marquee?.active || rulerDrag) {
           window.addEventListener('mousemove', handleMouseMove);
       }
       return () => window.removeEventListener('mousemove', handleMouseMove);
-  }, [resizingClipId, resizeEdge, resizeStartX, resizeStartValues, zoom, snap, onClipResize, loopDragType, loopDragStartX, loopDragStartValues, loopRegion, setLoopRegion, bpm, marquee, clips]);
+  }, [resizingClipId, resizeEdge, resizeStartX, resizeStartValues, zoom, snap, onClipResize, loopDragType, loopDragStartX, loopDragStartValues, loopRegion, setLoopRegion, bpm, marquee, clips, rulerDrag]);
 
   // Wheel Zoom
   useEffect(() => {
@@ -325,9 +382,24 @@ export const Timeline: React.FC<TimelineProps> = ({
       return () => container.removeEventListener('wheel', handleWheel);
   }, [zoom, setZoom]);
 
+  const handleRulerMouseDown = (e: React.MouseEvent) => {
+      if (e.button !== 0) return; // Only left click
+      if ((e.target as HTMLElement).closest('.loop-region-handle')) return;
+      e.preventDefault();
+      
+      setRulerDrag({
+          startY: e.clientY,
+          initialZoom: zoom
+      });
+      isRulerDraggingRef.current = false; // Will set to true on move
+  };
+
   const handleRulerClick = (e: React.MouseEvent) => {
       if (e.button === 2) return;
       if ((e.target as HTMLElement).closest('.loop-region-handle')) return;
+      
+      // If we dragged to zoom, don't seek
+      if (isRulerDraggingRef.current) return;
       
       const rect = timelineRef.current?.getBoundingClientRect();
       if (!rect) return;
@@ -335,7 +407,7 @@ export const Timeline: React.FC<TimelineProps> = ({
       const clickX = e.clientX - rect.left + timelineRef.current!.scrollLeft;
       const seekTime = Math.max(0, (clickX / zoom));
       
-      onSeek(snapToGrid(seekTime));
+      onSeek(snap ? snapToGrid(seekTime) : seekTime);
   };
 
   const handleTimelineClick = (e: React.MouseEvent) => {
@@ -387,7 +459,7 @@ export const Timeline: React.FC<TimelineProps> = ({
         if (!marquee?.active) {
              const clickX = e.clientX - rect.left + timelineRef.current!.scrollLeft;
              const seekTime = Math.max(0, (clickX / zoom));
-             onSeek(snapToGrid(seekTime));
+             onSeek(snap ? snapToGrid(seekTime) : seekTime);
              setSelectedClipIds([]); 
         }
     }
@@ -419,7 +491,9 @@ export const Timeline: React.FC<TimelineProps> = ({
 
     const clickX = e.clientX - rect.left + timelineRef.current!.scrollLeft;
     const rawTime = Math.max(0, (clickX / zoom));
-    const dropTime = snapToGrid(rawTime);
+    
+    // If dropping a file, we usually just snap the insertion point
+    const dropTime = snap ? snapToGrid(rawTime) : rawTime;
 
     if (e.dataTransfer.files.length > 0) {
       const files = Array.from(e.dataTransfer.files) as File[];
@@ -439,9 +513,20 @@ export const Timeline: React.FC<TimelineProps> = ({
         if (!draggedClip) return;
 
         const movingIds = selectedClipIds.includes(draggedClipId) ? selectedClipIds : [draggedClipId];
+        
+        // --- Improved Snap Logic ---
+        // We want the *START* of the clip to land on the grid, not the mouse cursor.
+        // `primaryOffset` is the time difference between Clip Start and Mouse Click position.
         const primaryOffset = dragOffsets[draggedClipId] || 0;
-        const newPrimaryTime = Math.max(0, dropTime - primaryOffset);
-        const timeDelta = newPrimaryTime - draggedClip.startTime; 
+        
+        // 1. Calculate where the clip start WOULD be if we dropped it at the raw mouse position
+        const rawNewStartTime = rawTime - primaryOffset;
+        
+        // 2. Snap THAT start time to the grid
+        const snappedNewStartTime = snap ? snapToGrid(rawNewStartTime) : rawNewStartTime;
+        
+        // 3. Calculate the delta applied to all other selected clips
+        const timeDelta = Math.max(0, snappedNewStartTime) - draggedClip.startTime; 
         
         const updates = movingIds.map(id => {
             const clip = clips.find(c => c.id === id);
@@ -477,12 +562,19 @@ export const Timeline: React.FC<TimelineProps> = ({
      }
      
      const rect = (e.target as HTMLElement).getBoundingClientRect();
-     const offsetX = e.clientX - rect.left;
-     const offsetTime = offsetX / zoom;
+     
+     // Calculate how far the mouse is from the start of the clip (in seconds)
+     const mouseOffsetX = e.clientX - rect.left;
+     const mouseOffsetTime = mouseOffsetX / zoom;
      
      const offsets: {[id:string]: number} = {};
      currentSelection.forEach(id => {
-         offsets[id] = offsetTime; 
+         // Store the offset so we can subtract it during drop to find the clip start
+         if (id === clip.id) {
+             offsets[id] = mouseOffsetTime;
+         } else {
+             offsets[id] = 0; // Not strictly needed for follower clips in this logic
+         }
      });
      
      setDragOffsets(offsets);
@@ -544,7 +636,7 @@ export const Timeline: React.FC<TimelineProps> = ({
           y: e.pageY,
           type: 'BACKGROUND',
           targetId: trackId,
-          time: snapToGrid(time)
+          time: snap ? snapToGrid(time) : time
       });
   };
 
@@ -557,7 +649,7 @@ export const Timeline: React.FC<TimelineProps> = ({
           x: e.pageX,
           y: e.pageY,
           type: 'RULER',
-          time: snapToGrid(time)
+          time: snap ? snapToGrid(time) : time
       });
   };
 
@@ -710,7 +802,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   return (
     <>
       <div 
-        className={`flex-1 relative flex flex-col select-none ${tool === 'BLADE' ? 'cursor-[url(https://cdn.custom-cursor.com/db/cursor/32/Scissors_Cursor.png),_auto]' : ''}`}
+        className={`flex-1 relative flex flex-col select-none ${tool === 'BLADE' ? 'cursor-[url(https://cdn.custom-cursor.com/db/cursor/32/Scissors_Cursor.png),_auto]' : ''} ${rulerDrag ? 'cursor-ns-resize' : ''}`}
         ref={timelineRef}
         onClick={handleTimelineClick}
         onMouseDown={handleMouseDown}
@@ -749,7 +841,8 @@ export const Timeline: React.FC<TimelineProps> = ({
           style={{ width: `${totalBars * pixelsPerBar}px`, height: `${TIMELINE_RULER_HEIGHT}px` }}
           onContextMenu={handleRulerContextMenu}
           onClick={handleRulerClick}
-          title="Left-click to seek. Right-click to add Tempo or Time Signature changes"
+          onMouseDown={handleRulerMouseDown}
+          title="Left-click to seek. Drag Up/Down to Zoom. Right-click to add markers."
         >
              {barsArray.map((_, i) => (
                  <div 
