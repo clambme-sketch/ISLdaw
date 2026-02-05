@@ -500,6 +500,8 @@ export const Timeline: React.FC<TimelineProps> = ({
       files.forEach(file => {
         const isAudio = file.type.startsWith('audio/') || 
                         file.type === 'video/mp4' || 
+                        file.type === 'video/webm' || // Chromebook Screen Recording
+                        file.name.toLowerCase().endsWith('.webm') ||
                         file.name.toLowerCase().endsWith('.m4a');
         if (isAudio) {
           onFileDrop(file, trackId, dropTime);
@@ -812,7 +814,7 @@ export const Timeline: React.FC<TimelineProps> = ({
             ref={fileInputRef} 
             onChange={handleFileSelect}
             className="hidden" 
-            accept="audio/*,.m4a,.mp4" 
+            accept="audio/*,video/webm,.webm,.m4a,.mp4" 
         />
 
         {/* Marquee Box */}
