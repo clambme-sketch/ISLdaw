@@ -68,53 +68,53 @@ export const StemSplitter: React.FC<StemSplitterProps> = ({ isOpen, onClose, onS
 
   return (
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
-      <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden animate-slide-up">
+      <div className="bg-[#2d2d2d] border border-[#111] rounded-none shadow-none w-full max-w-md flex flex-col overflow-hidden transition-none">
         
-        <div className="p-6 border-b border-gray-800 flex justify-between items-center">
-            <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                <Layers className="text-blue-400" /> AI Stem Splitter
+        <div className="p-6 border-b border-[#111] bg-[#2d2d2d] flex justify-between items-center">
+            <h2 className="text-xl font-bold text-[#d4d4d4] flex items-center gap-2">
+                <Layers className="text-[#ff7b00]" /> AI Stem Splitter
             </h2>
-            <button onClick={onClose} className="text-gray-400 hover:text-white"><X size={20} /></button>
+            <button onClick={onClose} className="text-[#999] hover:text-[#d4d4d4]"><X size={20} /></button>
         </div>
 
         <div className="p-6 space-y-6">
-            <div className="border-2 border-dashed border-gray-700 rounded-xl p-8 flex flex-col items-center justify-center text-center hover:border-blue-500/50 transition-colors bg-gray-800/30">
+            <div className="border-2 border-dashed border-[#444] rounded-none p-8 flex flex-col items-center justify-center text-center hover:border-[#ff7b00] transition-none bg-[#1e1e1e]">
                 <input 
                     type="file" 
                     id="stem-upload" 
                     className="hidden" 
-                    accept="audio/*"
+                    accept="audio/*,.aif,.aiff,.wav,.mp3,.flac,.ogg,.m4a"
                     onChange={handleFileChange}
                 />
                 
                 {file ? (
                     <div className="flex flex-col items-center gap-2">
-                        <div className="p-3 bg-blue-500/20 rounded-full text-blue-400">
+                        <div className="p-3 bg-[#ff7b00]/20 rounded-none text-[#ff7b00]">
                             <Music size={24} />
                         </div>
-                        <span className="font-medium text-white">{file.name}</span>
-                        <span className="text-xs text-gray-400">{(file.size / 1024 / 1024).toFixed(2)} MB</span>
-                        <button onClick={() => setFile(null)} className="text-xs text-red-400 hover:underline mt-2">Remove</button>
+                        <span className="font-medium text-[#d4d4d4]">{file.name}</span>
+                        <span className="text-xs text-[#999]">{(file.size / 1024 / 1024).toFixed(2)} MB</span>
+                        <button onClick={() => setFile(null)} className="text-xs text-[#ef4444] hover:underline mt-2">Remove</button>
                     </div>
                 ) : (
                     <label htmlFor="stem-upload" className="cursor-pointer flex flex-col items-center gap-2">
-                        <Upload size={32} className="text-gray-500" />
-                        <span className="text-sm text-gray-300 font-medium">Click to upload song</span>
-                        <span className="text-xs text-gray-500">Supports MP3, WAV, FLAC</span>
+                        <Upload size={32} className="text-[#999]" />
+                        <span className="text-sm text-[#d4d4d4] font-medium">Click to upload song</span>
+                        <span className="text-xs text-[#999]">Supports MP3, WAV, FLAC</span>
                     </label>
                 )}
             </div>
 
-            <div className="bg-gray-800 p-4 rounded-lg space-y-2">
+            <div className="bg-[#1e1e1e] p-4 rounded-none space-y-2 border border-[#111]">
                  <div className="flex gap-2 items-start">
-                    <Server size={16} className="text-purple-400 shrink-0 mt-0.5" />
-                    <div className="text-xs text-gray-300">
+                    <Server size={16} className="text-[#8b5cf6] shrink-0 mt-0.5" />
+                    <div className="text-xs text-[#d4d4d4]">
                         <strong>Deep Analysis:</strong> Audio is sent to Google's Gemini AI to identify instruments, timestamps, and frequency maps.
                     </div>
                  </div>
                  <div className="flex gap-2 items-start">
-                    <Sparkles size={16} className="text-yellow-400 shrink-0 mt-0.5" />
-                    <div className="text-xs text-gray-300">
+                    <Sparkles size={16} className="text-[#f59e0b] shrink-0 mt-0.5" />
+                    <div className="text-xs text-[#d4d4d4]">
                         <strong>Hi-Fi Engine:</strong> Uses Linkwitz-Riley crossovers and transient shapers for professional-grade isolation. Processing may take 1-2 minutes.
                     </div>
                  </div>
@@ -123,7 +123,7 @@ export const StemSplitter: React.FC<StemSplitterProps> = ({ isOpen, onClose, onS
             <button 
                 onClick={handleProcess}
                 disabled={!file || loading}
-                className="w-full py-3 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-white font-semibold flex items-center justify-center gap-2 transition-all"
+                className="w-full py-3 bg-[#ff7b00] hover:bg-[#ffaa00] disabled:opacity-50 disabled:cursor-not-allowed rounded-none text-black font-semibold flex items-center justify-center gap-2 transition-none"
             >
                 {loading ? (
                     <>

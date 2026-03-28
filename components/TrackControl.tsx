@@ -114,23 +114,30 @@ export const TrackControl: React.FC<TrackControlProps> = ({
 
   return (
     <div 
-        className={`flex flex-col p-3 border-b box-border ${isMaster ? 'bg-gray-900 border-t border-blue-500/30' : 'bg-gray-800 border-gray-700'} relative group select-none transition-all`}
+        className={`flex flex-col p-2 border-b box-border ${isMaster ? 'bg-[#2d2d2d] border-t border-[#111]' : 'bg-[#2d2d2d] border-[#111]'} relative group select-none transition-none`}
         style={{ height: `${height}px` }}
         onDoubleClick={() => onOpenEditor(track.id)}
         title={isMaster ? "Master Track" : "Double-click to open Track Editor"}
     >
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between mb-1.5">
         <div className="flex items-center gap-2">
-            {!isMaster && <div className="w-3 h-3 rounded-full" style={{ backgroundColor: track.color }} />}
-            {isMaster && <Activity size={14} className="text-blue-400" />}
-            <span className={`font-semibold text-sm truncate w-24 ${isMaster ? 'text-blue-400' : 'text-gray-200'}`} title={track.name}>
-            {track.name}
-            </span>
+            {!isMaster && <div className="w-2 h-2 rounded-none" style={{ backgroundColor: track.color }} />}
+            {isMaster && <Activity size={12} className="text-[#d4d4d4]" />}
+            <input
+                type="text"
+                value={track.name}
+                onChange={(e) => onUpdate(track.id, { name: e.target.value })}
+                onClick={(e) => e.stopPropagation()}
+                onDoubleClick={(e) => e.stopPropagation()}
+                className={`font-medium text-xs truncate w-24 bg-transparent outline-none focus:bg-[#111] focus:px-1 rounded-sm ${isMaster ? 'text-[#d4d4d4]' : 'text-[#d4d4d4]'}`}
+                title={track.name}
+                readOnly={isMaster}
+            />
         </div>
         {!isMaster && (
             <button 
                 onClick={(e) => { e.stopPropagation(); onDelete(track.id); }}
-                className="text-xs text-gray-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                className="text-[10px] text-[#999] hover:text-[#ef4444] opacity-0 group-hover:opacity-100 transition-none"
                 title="Delete Track"
             >
                 Delete
@@ -138,42 +145,42 @@ export const TrackControl: React.FC<TrackControlProps> = ({
         )}
       </div>
 
-      <div className="flex items-center gap-2 mb-2">
+      <div className="flex items-center gap-1 mb-1.5">
         {!isMaster && (
             <>
                 {/* Arm Button */}
                 <button
                 onClick={(e) => { e.stopPropagation(); onArmToggle(); }}
-                className={`p-1.5 rounded-full transition-all ${
+                className={`p-1 rounded-none transition-none ${
                     isArmed 
-                        ? (isRecordingGlobal ? 'bg-red-600 text-white animate-pulse' : 'bg-red-900/50 text-red-500 border border-red-500') 
-                        : 'bg-gray-700 text-gray-400 hover:text-white hover:bg-gray-600'
+                        ? (isRecordingGlobal ? 'bg-[#ef4444] text-white' : 'bg-[#ef4444]/30 text-[#ef4444] border border-[#ef4444]') 
+                        : 'bg-[#444] text-[#999] hover:text-[#d4d4d4] hover:bg-[#555]'
                 }`}
                 title={isArmed ? "Disarm Track (Recording Input)" : "Arm Track for Recording"}
                 >
-                    <div className={`w-3 h-3 rounded-full ${isArmed ? 'bg-current' : 'bg-current'}`} />
+                    <div className={`w-2.5 h-2.5 rounded-full ${isArmed ? 'bg-current' : 'bg-current'}`} />
                 </button>
 
                 <button
                 onClick={(e) => { e.stopPropagation(); onUpdate(track.id, { muted: !track.muted }); }}
-                className={`p-1 rounded ${track.muted ? 'bg-red-500/20 text-red-500' : 'bg-gray-700 text-gray-400 hover:text-gray-200'}`}
+                className={`p-1 rounded-none ${track.muted ? 'bg-[#ff7b00] text-black' : 'bg-[#444] text-[#999] hover:text-[#d4d4d4] hover:bg-[#555]'}`}
                 title={track.muted ? "Unmute Track" : "Mute Track"}
                 >
-                {track.muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+                {track.muted ? <VolumeX size={12} /> : <Volume2 size={12} />}
                 </button>
                 <button
                 onClick={(e) => { e.stopPropagation(); onUpdate(track.id, { soloed: !track.soloed }); }}
-                className={`p-1 rounded ${track.soloed ? 'bg-yellow-500/20 text-yellow-500' : 'bg-gray-700 text-gray-400 hover:text-gray-200'}`}
+                className={`p-1 rounded-none ${track.soloed ? 'bg-[#3b82f6] text-black' : 'bg-[#444] text-[#999] hover:text-[#d4d4d4] hover:bg-[#555]'}`}
                 title={track.soloed ? "Unsolo Track" : "Solo Track"}
                 >
-                <Headphones size={14} />
+                <Headphones size={12} />
                 </button>
                 <button
                 onClick={(e) => { e.stopPropagation(); onToggleAutomation(track.id); }}
-                className={`p-1 rounded ${track.showAutomation ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-700 text-gray-400 hover:text-gray-200'}`}
+                className={`p-1 rounded-none ${track.showAutomation ? 'bg-[#ef4444] text-black' : 'bg-[#444] text-[#999] hover:text-[#d4d4d4] hover:bg-[#555]'}`}
                 title="Toggle Automation Lanes"
                 >
-                <TrendingUp size={14} />
+                <TrendingUp size={12} />
                 </button>
             </>
         )}
@@ -182,31 +189,64 @@ export const TrackControl: React.FC<TrackControlProps> = ({
              <>
                 <button
                     onClick={(e) => { e.stopPropagation(); onOpenVisualizerSettings?.(); }}
-                    className="p-1.5 bg-gray-700 text-gray-400 hover:text-blue-400 hover:bg-gray-600 rounded transition-colors"
+                    className="p-1 bg-[#444] text-[#999] hover:text-[#d4d4d4] hover:bg-[#555] rounded-none transition-none"
                     title="Visualizer Settings"
                 >
-                    <Eye size={14} />
+                    <Eye size={12} />
                 </button>
-                <span className="text-[10px] text-gray-500 uppercase font-bold">Vol</span>
+                <div className="flex items-center ml-1">
+                    <span className="text-[9px] text-[#999] uppercase font-bold mr-1">Vol</span>
+                    <input 
+                        type="number" 
+                        value={track.volume <= 0 ? -60 : Math.max(-60, 20 * Math.log10(track.volume)).toFixed(1)} 
+                        onChange={(e) => {
+                            const db = parseFloat(e.target.value);
+                            const linear = db <= -60 ? 0 : Math.pow(10, db / 20);
+                            onUpdate(track.id, { volume: linear });
+                        }}
+                        className="w-8 bg-transparent text-right text-[9px] text-[#999] outline-none focus:text-[#ff7b00] hide-arrows"
+                    />
+                    <span className="text-[9px] text-[#999] ml-0.5">dB</span>
+                </div>
              </>
         )}
+        {!isMaster && (
+            <div className="flex items-center ml-1">
+                <input 
+                    type="number" 
+                    value={track.volume <= 0 ? -60 : Math.max(-60, 20 * Math.log10(track.volume)).toFixed(1)} 
+                    onChange={(e) => {
+                        const db = parseFloat(e.target.value);
+                        const linear = db <= -60 ? 0 : Math.pow(10, db / 20);
+                        onUpdate(track.id, { volume: linear });
+                    }}
+                    className="w-8 bg-transparent text-right text-[9px] text-[#999] outline-none focus:text-[#ff7b00] hide-arrows"
+                />
+                <span className="text-[9px] text-[#999] ml-0.5">dB</span>
+            </div>
+        )}
 
-        <div className="flex-1" onClick={e => e.stopPropagation()}>
+        <div className="flex-1 ml-1" onClick={e => e.stopPropagation()}>
             <input
                 type="range"
-                min="0"
-                max="1"
-                step="0.01"
-                value={track.volume}
-                onChange={(e) => onUpdate(track.id, { volume: parseFloat(e.target.value) })}
-                className={`w-full h-1 rounded-lg appearance-none cursor-pointer ${isMaster ? 'accent-blue-400 bg-gray-700' : 'accent-blue-500 bg-gray-600'}`}
+                min="-60"
+                max="24"
+                step="0.1"
+                value={track.volume <= 0 ? -60 : Math.max(-60, 20 * Math.log10(track.volume))}
+                onChange={(e) => {
+                    const db = parseFloat(e.target.value);
+                    const linear = db <= -60 ? 0 : Math.pow(10, db / 20);
+                    onUpdate(track.id, { volume: linear });
+                }}
+                onDoubleClick={() => onUpdate(track.id, { volume: 1.0 })}
+                className={`w-full h-1.5 rounded-none appearance-none cursor-pointer ${isMaster ? 'accent-[#ff7b00] bg-[#111]' : 'accent-[#ff7b00] bg-[#111]'}`}
                 disabled={track.showAutomation && track.selectedAutomationId === 'volume'}
-                title={`Volume: ${(track.volume * 100).toFixed(0)}%`}
+                title={`Volume: ${track.volume <= 0 ? '-inf' : Math.max(-60, 20 * Math.log10(track.volume)).toFixed(1)} dB (Double-click to reset)`}
             />
         </div>
       </div>
       
-      <div className="h-2 w-full bg-gray-900 rounded overflow-hidden mt-1 relative border border-gray-800" title="Audio Level Meter">
+      <div className="h-1.5 w-full bg-[#111] rounded-none overflow-hidden mt-0.5 relative border border-[#111]" title="Audio Level Meter">
           <canvas ref={canvasRef} width={200} height={8} className="w-full h-full block" />
           <div className="absolute inset-0 flex justify-between px-2 pointer-events-none opacity-50">
                <div className="w-px h-full bg-black/50" style={{ left: '50%' }}></div>
@@ -215,7 +255,7 @@ export const TrackControl: React.FC<TrackControlProps> = ({
       </div>
       
       {isMaster && (
-          <div className="flex justify-between text-[9px] text-gray-500 font-mono mt-0.5 px-1">
+          <div className="flex justify-between text-[8px] text-[#777] font-mono mt-0.5 px-1">
               <span>-inf</span>
               <span>-12</span>
               <span>-6</span>
@@ -226,17 +266,17 @@ export const TrackControl: React.FC<TrackControlProps> = ({
       {/* Improved Automation Header with Dropdown */}
       {track.showAutomation && (
            <div 
-             className="absolute bottom-0 left-0 right-0 bg-gray-850 border-t border-gray-700 p-2 flex flex-col gap-1 animate-fade-in"
+             className="absolute bottom-0 left-0 right-0 bg-[#2d2d2d] border-t border-[#111] p-1.5 flex flex-col gap-1"
              style={{ height: `${AUTOMATION_HEIGHT}px` }}
            >
                <div className="flex items-center justify-between">
-                   <div className="flex items-center gap-1 text-blue-400 text-[10px] font-bold uppercase">
+                   <div className="flex items-center gap-1 text-[#ef4444] text-[9px] font-bold uppercase">
                        <TrendingUp size={10} /> Auto:
                    </div>
                    {/* Automation Type Selector */}
                    <div className="relative" title="Select Parameter to Automate">
                        <select 
-                        className="bg-gray-900 text-[10px] text-gray-300 border border-gray-700 rounded px-1 py-0.5 outline-none focus:border-blue-500 w-32 appearance-none"
+                        className="bg-[#111] text-[9px] text-[#d4d4d4] border border-[#111] rounded-none px-1 py-0.5 outline-none focus:border-[#ff7b00] w-28 appearance-none"
                         value={track.selectedAutomationId || 'volume'}
                         onChange={(e) => onUpdate(track.id, { selectedAutomationId: e.target.value })}
                         onClick={(e) => e.stopPropagation()}
@@ -257,10 +297,10 @@ export const TrackControl: React.FC<TrackControlProps> = ({
                                return null;
                            })}
                        </select>
-                       <ChevronDown size={10} className="absolute right-1 top-1.5 text-gray-500 pointer-events-none" />
+                       <ChevronDown size={10} className="absolute right-1 top-1 text-[#777] pointer-events-none" />
                    </div>
                </div>
-               <span className="text-[9px] text-gray-500 text-right">Click timeline to add points</span>
+               <span className="text-[8px] text-[#777] text-right">Click timeline to add points</span>
            </div>
       )}
 

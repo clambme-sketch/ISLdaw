@@ -9,11 +9,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@google/genai": "^1.32.0",
+    "aubiojs": "^0.2.1",
     "lucide-react": "^0.556.0",
+    "pitch-shift": "^0.0.0",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
     "uuid": "^13.0.0",
-    "@google/genai": "^1.32.0"
+    "web-audio-beat-detector": "^8.2.36"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

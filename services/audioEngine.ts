@@ -1,5 +1,6 @@
 
 import { AudioClip, Track, AudioPlugin, AutomationPoint, PluginType } from '../types';
+import { analyze } from 'web-audio-beat-detector';
 
 interface ActiveSource {
   source: AudioBufferSourceNode;
@@ -42,6 +43,7 @@ class AudioEngine {
   
   private currentInputDeviceId: string = 'default';
   public latencySeconds: number = 0.025; // Default 25ms manual offset
+  private bpm: number = 120;
 
   constructor() {
     this.context = new (window.AudioContext || (window as any).webkitAudioContext)({
@@ -58,6 +60,10 @@ class AudioEngine {
     
     this.masterInput = this.context.createGain();
     this.masterInput.connect(this.masterFader);
+  }
+
+  public setBpm(bpm: number) {
+      this.bpm = bpm;
   }
 
   public getContext() {
@@ -335,16 +341,76 @@ class AudioEngine {
   private createPluginNode(context: BaseAudioContext, plugin: AudioPlugin): AudioNode | { input: AudioNode, output: AudioNode, [key: string]: any } {
     switch (plugin.type) {
       case 'DELAY':
-        const delay = context.createDelay();
-        delay.delayTime.value = plugin.params.time || 0.3;
-        (delay as any)._time = delay.delayTime;
-        return delay;
+        const delayInput = context.createGain();
+        const delayOutput = context.createGain();
+        const delayNode = context.createDelay();
+        const feedbackNode = context.createGain();
+        const delayDry = context.createGain();
+        const delayWet = context.createGain();
+
+        delayNode.delayTime.value = Number(plugin.params.time) || 0.3;
+        if (plugin.params.syncToTempo) {
+            const beatDuration = 60 / this.bpm;
+            delayNode.delayTime.value = beatDuration * (Number(plugin.params.tempoMultiplier) || 1);
+        }
+        feedbackNode.gain.value = Number(plugin.params.feedback) || 0.4;
+        
+        const dMix = Number(plugin.params.mix ?? 0.5);
+        delayDry.gain.value = 1 - dMix;
+        delayWet.gain.value = dMix;
+
+        delayInput.connect(delayDry);
+        delayDry.connect(delayOutput);
+
+        delayInput.connect(delayNode);
+        delayNode.connect(delayWet);
+        delayWet.connect(delayOutput);
+
+        delayNode.connect(feedbackNode);
+        feedbackNode.connect(delayNode);
+
+        return {
+            input: delayInput,
+            output: delayOutput,
+            _time: delayNode.delayTime,
+            _feedback: feedbackNode.gain,
+            _mix: delayWet.gain,
+            _dry: delayDry.gain
+        };
         
       case 'DISTORTION':
+        const distInput = context.createGain();
+        const distOutput = context.createGain();
         const waveShaper = context.createWaveShaper();
-        waveShaper.curve = this.makeDistortionCurve(plugin.params.drive || 0);
+        const toneFilter = context.createBiquadFilter();
+        const distDry = context.createGain();
+        const distWet = context.createGain();
+
+        waveShaper.curve = this.makeDistortionCurve(Number(plugin.params.drive) || 50);
         waveShaper.oversample = '4x';
-        return waveShaper;
+
+        toneFilter.type = 'lowpass';
+        toneFilter.frequency.value = Number(plugin.params.tone) || 3000;
+
+        const distMix = Number(plugin.params.mix ?? 1.0);
+        distDry.gain.value = 1 - distMix;
+        distWet.gain.value = distMix;
+
+        distInput.connect(distDry);
+        distDry.connect(distOutput);
+
+        distInput.connect(waveShaper);
+        waveShaper.connect(toneFilter);
+        toneFilter.connect(distWet);
+        distWet.connect(distOutput);
+
+        return {
+            input: distInput,
+            output: distOutput,
+            _tone: toneFilter.frequency,
+            _mix: distWet.gain,
+            _dry: distDry.gain
+        };
         
       case 'HIGHPASS':
         const hp = context.createBiquadFilter();
@@ -390,6 +456,154 @@ class AudioEngine {
              _dry: dryGain.gain
          };
          
+
+         // Web Audio API doesn't have native pitch correction.
+         // This creates a "Travis Scott/Kanye" vocal chain approximation:
+         // Highpass -> Saturation -> Comb Filter (Robotic Tone) -> Chorus Widener -> EQ
+         const atInput = context.createGain();
+         const atOutput = context.createGain();
+         
+         // 1. Highpass to remove mud
+         const atHp = context.createBiquadFilter();
+         atHp.type = 'highpass';
+         atHp.frequency.value = 120;
+         
+         // 2. Crisp Saturation
+         const atDist = context.createWaveShaper();
+         atDist.curve = this.makeDistortionCurve(15); 
+         
+         // 3. Comb filter for robotic resonance
+         const atDelay = context.createDelay();
+         const pitchOffset = Number(plugin.params.pitch) || 0;
+         
+         const keyStr = (plugin.params.key as string) || 'C';
+         const keys = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+         const keyIndex = Math.max(0, keys.indexOf(keyStr));
+         
+         // Base frequency for C2 is 65.406 Hz. Apply pitch offset.
+         const baseFreq = 65.406 * Math.pow(2, (keyIndex + pitchOffset) / 12);
+         
+         // Target a harmonic in the vocal range (e.g., C4)
+         let targetFreq = baseFreq * 4;
+         // Prevent delay time from going too low or high
+         targetFreq = Math.max(50, Math.min(targetFreq, 2000));
+         
+         atDelay.delayTime.value = 1.0 / targetFreq; 
+         
+         const atFeedback = context.createGain();
+         atFeedback.gain.value = 0.85; 
+         
+         // 4. EQ to boost presence
+         const atFilter = context.createBiquadFilter();
+         atFilter.type = 'peaking';
+         atFilter.frequency.value = targetFreq * 4; // Boost higher harmonics
+         atFilter.Q.value = 1.5;
+         atFilter.gain.value = 5; // Boost presence
+
+         // 5. Chorus/Widener
+         const chorusDelay = context.createDelay();
+         chorusDelay.delayTime.value = 0.02;
+         const lfo = context.createOscillator();
+         lfo.type = 'sine';
+         lfo.frequency.value = (Number(plugin.params.speed) || 0.1) * 50; // Speed controls LFO rate
+         const lfoGain = context.createGain();
+         lfoGain.gain.value = 0.002;
+         lfo.connect(lfoGain);
+         lfoGain.connect(chorusDelay.delayTime);
+         lfo.start();
+
+         const atMix = Number(plugin.params.mix ?? 1.0);
+         const atDry = context.createGain();
+         const atWet = context.createGain();
+         atDry.gain.value = 1 - atMix;
+         atWet.gain.value = atMix;
+
+         // Routing
+         atInput.connect(atDry);
+         atDry.connect(atOutput);
+
+         atInput.connect(atHp);
+         atHp.connect(atDist);
+         
+         // Comb filter loop
+         atDist.connect(atDelay);
+         atDelay.connect(atFeedback);
+         atFeedback.connect(atDelay);
+         
+         atDelay.connect(atFilter);
+         
+         // Split to chorus and direct
+         atFilter.connect(atWet);
+         atFilter.connect(chorusDelay);
+         chorusDelay.connect(atWet);
+         
+         atWet.connect(atOutput);
+
+         return {
+             input: atInput,
+             output: atOutput,
+             _mix: atWet.gain,
+             _dry: atDry.gain
+         };
+
+      case 'LIMITER':
+        const limiter = context.createDynamicsCompressor();
+        limiter.threshold.value = (plugin.params.threshold as number) ?? -0.1;
+        limiter.knee.value = 0.0;
+        limiter.ratio.value = 20.0;
+        limiter.attack.value = 0.001;
+        limiter.release.value = (plugin.params.release as number) ?? 0.1;
+        return limiter;
+
+      case 'COMPRESSOR':
+        const comp = context.createDynamicsCompressor();
+        comp.threshold.value = (plugin.params.threshold as number) ?? -24;
+        comp.knee.value = (plugin.params.knee as number) ?? 30;
+        comp.ratio.value = (plugin.params.ratio as number) ?? 12;
+        comp.attack.value = (plugin.params.attack as number) ?? 0.003;
+        comp.release.value = (plugin.params.release as number) ?? 0.25;
+        return comp;
+
+      case 'SIDECHAIN':
+        // Placeholder for sidechain - uses a compressor
+        const sc = context.createDynamicsCompressor();
+        sc.threshold.value = (plugin.params.threshold as number) ?? -24;
+        sc.ratio.value = (plugin.params.ratio as number) ?? 12;
+        sc.attack.value = (plugin.params.attack as number) ?? 0.003;
+        sc.release.value = (plugin.params.release as number) ?? 0.25;
+        return { input: sc, output: sc, compressor: sc };
+
+      case 'EQ8':
+        const eqInput = context.createGain();
+        const eqOutput = context.createGain();
+        let prev = eqInput;
+        const filters: BiquadFilterNode[] = [];
+        for(let i=0; i<8; i++) {
+            const f = context.createBiquadFilter();
+            f.type = 'peaking';
+            f.frequency.value = 100 * Math.pow(2, i);
+            f.gain.value = 0;
+            prev.connect(f);
+            prev = f;
+            filters.push(f);
+        }
+        prev.connect(eqOutput);
+        return { input: eqInput, output: eqOutput, filters };
+
+      case 'BITCRUSHER':
+        const bcInput = context.createGain();
+        const bcOutput = context.createGain();
+        const bcShaper = context.createWaveShaper();
+        // Simple bitcrush simulation using waveshaper
+        const bcCurve = new Float32Array(256);
+        for (let i = 0; i < 256; i++) {
+            bcCurve[i] = Math.floor((i - 128) / 16) * 16 / 128;
+        }
+        bcShaper.curve = bcCurve;
+        bcInput.connect(bcShaper);
+        bcShaper.connect(bcOutput);
+        return { input: bcInput, output: bcOutput };
+
       default:
         return context.createGain();
     }
@@ -429,6 +643,14 @@ class AudioEngine {
         nodes.pluginMap.set(plugin.id, nodeOrGraph);
         previousOutput.connect(input);
         previousOutput = output;
+
+        if (plugin.type === 'SIDECHAIN' && plugin.params.sourceTrackId) {
+            const sourceTrackId = plugin.params.sourceTrackId as string;
+            const sourceNodes = this.trackNodes.get(sourceTrackId);
+            if (sourceNodes && (nodeOrGraph as any).compressor) {
+                sourceNodes.output.connect((nodeOrGraph as any).compressor);
+            }
+        }
     });
 
     previousOutput.connect(nodes.output);
@@ -484,19 +706,50 @@ class AudioEngine {
 
   private getReverbBuffer(context: BaseAudioContext, type: number, decayTime: number) {
       const sampleRate = context.sampleRate;
-      const length = sampleRate * decayTime;
+      const length = Math.max(1, Math.floor(sampleRate * decayTime));
       const impulse = context.createBuffer(2, length, sampleRate);
       const left = impulse.getChannelData(0);
       const right = impulse.getChannelData(1);
 
-      for (let i = 0; i < length; i++) {
-          let decay = 0;
-          if (type === 0) decay = Math.pow(1 - i / length, decayTime * 1.5);
-          else if (type === 1) decay = Math.pow(1 - i / length, decayTime * 4);
-          else decay = Math.pow(1 - i / length, decayTime * 2);
+      // Type 0: Hall (long, dark)
+      // Type 1: Room (short, bright)
+      // Type 2: Plate (dense, medium bright)
+      
+      let lpFreq = 5000;
+      let decayFactor = 1.5;
+      
+      if (type === 0) { // Hall
+          lpFreq = 3000;
+          decayFactor = decayTime * 1.5;
+      } else if (type === 1) { // Room
+          lpFreq = 8000;
+          decayFactor = decayTime * 4;
+      } else { // Plate
+          lpFreq = 6000;
+          decayFactor = decayTime * 2;
+      }
 
-          left[i] = (Math.random() * 2 - 1) * decay;
-          right[i] = (Math.random() * 2 - 1) * decay;
+      // Simple one-pole lowpass filter coefficient
+      const dt = 1.0 / sampleRate;
+      const rc = 1.0 / (2.0 * Math.PI * lpFreq);
+      const alpha = dt / (rc + dt);
+
+      let lastL = 0;
+      let lastR = 0;
+
+      for (let i = 0; i < length; i++) {
+          let decay = Math.pow(1 - i / length, decayFactor);
+
+          // Generate noise
+          let noiseL = (Math.random() * 2 - 1);
+          let noiseR = (Math.random() * 2 - 1);
+
+          // Apply lowpass filter
+          lastL = lastL + alpha * (noiseL - lastL);
+          lastR = lastR + alpha * (noiseR - lastR);
+
+          left[i] = lastL * decay;
+          right[i] = lastR * decay;
       }
       return impulse;
   }
@@ -636,7 +889,15 @@ class AudioEngine {
   }
 
   private scaleAutomationValue(paramId: string, normalizedValue: number): number {
-      if (paramId === 'volume') return normalizedValue; // 0 to 1
+      if (paramId === 'volume') {
+          let db = -60;
+          if (normalizedValue <= 0.5) {
+              db = -60 + (normalizedValue * 2 * 60); // 0 -> -60dB, 0.5 -> 0dB
+          } else {
+              db = (normalizedValue - 0.5) * 2 * 24; // 0.5 -> 0dB, 1.0 -> +24dB
+          }
+          return db <= -60 ? 0 : Math.pow(10, db / 20);
+      }
       if (paramId === 'pan') return (normalizedValue * 2) - 1; // -1 to 1
       
       const paramName = paramId.split(':')[1];
@@ -1073,6 +1334,64 @@ class AudioEngine {
         head.connect(offlineCtx.destination);
         source.start();
         return await offlineCtx.startRendering();
+  }
+  public async detectTempo(buffer: AudioBuffer): Promise<number> {
+    try {
+      const tempo = await analyze(buffer);
+      return Math.round(tempo);
+    } catch (err) {
+      console.error("web-audio-beat-detector failed, falling back to simple detection", err);
+      // Fallback to simple peak detection algorithm for BPM
+      const channelData = buffer.getChannelData(0);
+      const sampleRate = buffer.sampleRate;
+      
+      // 1. Compute envelope (low-pass filter on squared signal)
+      const blockSize = Math.floor(sampleRate / 100); // 10ms blocks
+      const blocks = Math.floor(channelData.length / blockSize);
+      const envelope = new Float32Array(blocks);
+      
+      for (let i = 0; i < blocks; i++) {
+          let sum = 0;
+          for (let j = 0; j < blockSize; j++) {
+              const sample = channelData[i * blockSize + j];
+              sum += sample * sample;
+          }
+          envelope[i] = Math.sqrt(sum / blockSize);
+      }
+      
+      // 2. Find peaks
+      const peaks: number[] = [];
+      const threshold = 0.1; // Adjust as needed
+      for (let i = 1; i < blocks - 1; i++) {
+          if (envelope[i] > envelope[i-1] && envelope[i] > envelope[i+1] && envelope[i] > threshold) {
+              peaks.push(i * blockSize / sampleRate); // Peak time in seconds
+          }
+      }
+      
+      // 3. Calculate intervals
+      const intervals: Record<number, number> = {};
+      for (let i = 0; i < peaks.length; i++) {
+          for (let j = i + 1; j < Math.min(i + 10, peaks.length); j++) {
+              const interval = peaks[j] - peaks[i];
+              const bpm = Math.round(60 / interval);
+              if (bpm >= 60 && bpm <= 200) {
+                  intervals[bpm] = (intervals[bpm] || 0) + 1;
+              }
+          }
+      }
+      
+      // 4. Find most common BPM
+      let bestBpm = 120;
+      let maxCount = 0;
+      for (const [bpmStr, count] of Object.entries(intervals)) {
+          if (count > maxCount) {
+              maxCount = count;
+              bestBpm = parseInt(bpmStr);
+          }
+      }
+      
+      return bestBpm;
+    }
   }
 }
 

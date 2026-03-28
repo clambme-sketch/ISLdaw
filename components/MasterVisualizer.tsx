@@ -11,7 +11,7 @@ interface MasterVisualizerProps {
   };
 }
 
-export const MasterVisualizer: React.FC<MasterVisualizerProps> = ({ isPlaying, config = { mode: 'SPECTRUM', colorStart: '#3b82f6', colorEnd: '#ef4444' } }) => {
+export const MasterVisualizer: React.FC<MasterVisualizerProps> = ({ isPlaying, config = { mode: 'SPECTRUM', colorStart: '#ff7b00', colorEnd: '#ffaa00' } }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -38,11 +38,11 @@ export const MasterVisualizer: React.FC<MasterVisualizerProps> = ({ isPlaying, c
       const height = canvas.height;
 
       // Background
-      ctx.fillStyle = '#0f172a'; // Match gray-950
+      ctx.fillStyle = '#111'; // Match Ableton dark
       ctx.fillRect(0, 0, width, height);
 
       // Grid Lines
-      ctx.strokeStyle = '#1e293b';
+      ctx.strokeStyle = '#222';
       ctx.beginPath();
       for(let i=0; i<width; i+=width/10) {
           ctx.moveTo(i, 0);
@@ -88,7 +88,7 @@ export const MasterVisualizer: React.FC<MasterVisualizerProps> = ({ isPlaying, c
           ctx.stroke();
           
           // Text Labels
-          ctx.fillStyle = '#64748b';
+          ctx.fillStyle = '#666';
           ctx.font = '10px monospace';
           ctx.textAlign = 'left';
           ctx.fillText('20Hz', 10, height - 5);
@@ -135,7 +135,7 @@ export const MasterVisualizer: React.FC<MasterVisualizerProps> = ({ isPlaying, c
   if (config.mode === 'OFF') return null;
 
   return (
-    <div className="w-full h-full relative rounded-lg overflow-hidden border border-gray-800 bg-gray-950 shadow-inner">
+    <div className="w-full h-full relative rounded-none overflow-hidden border border-[#111] bg-[#111] shadow-none">
        <canvas 
           ref={canvasRef} 
           width={1000} 

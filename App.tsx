@@ -15,20 +15,27 @@ import { audioService } from './services/audioEngine';
 import { Plus } from 'lucide-react';
 
 const INITIAL_TRACKS: Track[] = [
-  { id: 'track-1', name: 'Drums', color: TRACK_COLORS[0], volume: 0.8, muted: false, soloed: false, plugins: [], automation: { volume: [] }, showAutomation: false, selectedAutomationId: 'volume' },
-  { id: 'track-2', name: 'Bass', color: TRACK_COLORS[1], volume: 0.8, muted: false, soloed: false, plugins: [], automation: { volume: [] }, showAutomation: false, selectedAutomationId: 'volume' },
-  { id: 'track-3', name: 'Melody', color: TRACK_COLORS[4], volume: 0.8, muted: false, soloed: false, plugins: [], automation: { volume: [] }, showAutomation: false, selectedAutomationId: 'volume' },
-  { id: 'track-4', name: 'Vocals', color: TRACK_COLORS[5], volume: 0.8, muted: false, soloed: false, plugins: [], automation: { volume: [] }, showAutomation: false, selectedAutomationId: 'volume' },
+  { id: 'track-1', name: 'Drums', color: TRACK_COLORS[0], volume: 1.0, muted: false, soloed: false, plugins: [], automation: { volume: [] }, showAutomation: false, selectedAutomationId: 'volume' },
+  { id: 'track-2', name: 'Bass', color: TRACK_COLORS[1], volume: 1.0, muted: false, soloed: false, plugins: [], automation: { volume: [] }, showAutomation: false, selectedAutomationId: 'volume' },
+  { id: 'track-3', name: 'Melody', color: TRACK_COLORS[4], volume: 1.0, muted: false, soloed: false, plugins: [], automation: { volume: [] }, showAutomation: false, selectedAutomationId: 'volume' },
+  { id: 'track-4', name: 'Vocals', color: TRACK_COLORS[5], volume: 1.0, muted: false, soloed: false, plugins: [], automation: { volume: [] }, showAutomation: false, selectedAutomationId: 'volume' },
 ];
 
 const MASTER_TRACK: Track = {
     id: 'master',
     name: 'Master',
     color: '#1e293b',
-    volume: 0.8,
+    volume: 1.0,
     muted: false,
     soloed: false,
-    plugins: [],
+    plugins: [
+        {
+            id: 'master-limiter',
+            type: 'LIMITER',
+            enabled: true,
+            params: { threshold: -0.1, release: 0.1 }
+        }
+    ],
     isMaster: true,
     automation: { volume: [] },
     showAutomation: false,
@@ -50,7 +57,7 @@ function App() {
   const [timeMarkers, setTimeMarkers] = useState<{time: number, label: string}[]>([]);
   
   // Transport Display State
-  const [followPlayhead, setFollowPlayhead] = useState(false);
+  const [followPlayhead, setFollowPlayhead] = useState(true);
   const [timeDisplayFormat, setTimeDisplayFormat] = useState<'TIME' | 'BARS'>('TIME');
   
   // Refs for transport state to be accessible in animation loop
@@ -63,7 +70,7 @@ function App() {
   // Visualizer Config
   const [isVisualizerSettingsOpen, setIsVisualizerSettingsOpen] = useState(false);
   const [visualizerConfig, setVisualizerConfig] = useState<{mode: 'SPECTRUM' | 'WAVEFORM' | 'OFF', colorStart: string, colorEnd: string}>({
-      mode: 'SPECTRUM',
+      mode: 'OFF',
       colorStart: '#3b82f6',
       colorEnd: '#ef4444'
   });
@@ -125,6 +132,10 @@ function App() {
     });
   }, []); 
 
+  useEffect(() => {
+    audioService.setBpm(bpm);
+  }, [bpm]);
+
   // --- Navigator Scroll Sync ---
   const handleMainScroll = () => {
       if (scrollContainerRef.current && navigatorRef.current) {
@@ -141,7 +152,7 @@ function App() {
   
   // --- Smart Zoom Handling ---
   const handleZoomChange = useCallback((newZoom: number) => {
-      const clampedZoom = Math.max(10, Math.min(500, newZoom));
+      const clampedZoom = Math.max(1, Math.min(1000, newZoom));
       setZoom(clampedZoom);
 
       // Center playhead logic
@@ -418,7 +429,7 @@ function App() {
       id: `track-${Date.now()}`,
       name: `Track ${tracks.length}`, 
       color: TRACK_COLORS[(tracks.length - 1) % TRACK_COLORS.length],
-      volume: 0.8,
+      volume: 1.0,
       muted: false,
       soloed: false,
       plugins: [],
@@ -520,7 +531,18 @@ function App() {
   };
   
   const updateClipProps = (id: string, updates: Partial<AudioClip>) => {
-      const newClips = clips.map(c => c.id === id ? { ...c, ...updates } : c);
+      const newClips = clips.map(c => {
+          if (c.id === id) {
+              const updatedClip = { ...c, ...updates };
+              // If playbackRate changed, adjust duration to match the new rate
+              if (updates.playbackRate !== undefined && updates.playbackRate !== c.playbackRate) {
+                  const ratio = c.playbackRate / updates.playbackRate;
+                  updatedClip.duration = c.duration * ratio;
+              }
+              return updatedClip;
+          }
+          return c;
+      });
       setClips(newClips);
       if (playbackState.isPlaying) startPlayback(playbackState.currentTime); 
   };
@@ -843,7 +865,7 @@ function App() {
   const masterHeightClass = visualizerConfig.mode === 'OFF' ? 'h-[135px]' : 'h-44';
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-gray-950 text-white font-sans selection:bg-purple-500/30">
+    <div className="flex flex-col h-screen overflow-hidden bg-[#1e1e1e] text-[#d4d4d4] font-sans selection:bg-[#ff7b00]/30">
       <SettingsModal 
           isOpen={isSettingsOpen} 
           onClose={() => setIsSettingsOpen(false)}
@@ -905,12 +927,12 @@ function App() {
         <div className="flex min-w-max">
             {/* Sticky Left Column (Headers) */}
             <div 
-                className="sticky left-0 z-30 bg-gray-900 border-r border-gray-700 flex flex-col flex-shrink-0 shadow-lg"
+                className="sticky left-0 z-40 bg-[#2d2d2d] border-r border-[#111] flex flex-col flex-shrink-0"
                 style={{ width: TRACK_HEADER_WIDTH }}
             >
                  {/* Sticky Top-Left Corner */}
                  <div 
-                    className="sticky top-0 z-40 bg-gray-900 border-b border-gray-700 flex-shrink-0"
+                    className="sticky top-0 z-50 bg-[#2d2d2d] border-b border-[#111] flex-shrink-0"
                     style={{ height: TIMELINE_RULER_HEIGHT }}
                  />
                  
@@ -932,16 +954,16 @@ function App() {
                  <div className="p-3">
                      <button 
                         onClick={addTrack}
-                        className="w-full py-3 border border-dashed border-gray-700 rounded-lg text-gray-500 hover:text-white hover:border-gray-500 hover:bg-gray-800 flex items-center justify-center gap-2 text-sm transition-all group"
+                        className="w-full py-3 border border-dashed border-[#555] rounded-none text-[#999] hover:text-[#d4d4d4] hover:border-[#888] hover:bg-[#444] flex items-center justify-center gap-2 text-sm transition-all group"
                         title="Add a new audio track"
                      >
-                        <div className="p-1 rounded bg-gray-800 group-hover:bg-gray-700 transition-colors"><Plus size={14} /></div>
+                        <div className="p-1 rounded-none bg-[#444] group-hover:bg-[#555] transition-colors"><Plus size={14} /></div>
                         <span>Add Track</span>
                      </button>
                  </div>
                  
                  {/* Bottom Spacer */}
-                 <div className="h-64 bg-gray-900" />
+                 <div className="h-64 bg-[#2d2d2d]" />
             </div>
 
             {/* Main Timeline Area (Scrolls with parent) */}
@@ -951,6 +973,8 @@ function App() {
                     tracks={regularTracks}
                     clips={clips}
                     currentTime={playbackState.currentTime}
+                    followPlayhead={followPlayhead}
+                    setFollowPlayhead={setFollowPlayhead}
                     onClipsUpdate={updateClips} // Batch update
                     onFileDrop={handleFileDrop}
                     setClips={setClips}
@@ -991,11 +1015,11 @@ function App() {
       </div>
 
       {/* Fixed Bottom Master Section */}
-      <div className={`${masterHeightClass} bg-gray-900 border-t-2 border-gray-800 flex flex-col z-50 shadow-[0_-5px_15px_rgba(0,0,0,0.5)] transition-all duration-300 ease-in-out`}>
+      <div className={`${masterHeightClass} bg-[#2d2d2d] border-t border-[#111] flex flex-col z-50 transition-all duration-300 ease-in-out`}>
          {/* Master Row */}
          <div className="flex flex-1 overflow-hidden">
              {/* Master Control (Left) */}
-             <div className="flex-shrink-0 border-r border-gray-800" style={{ width: TRACK_HEADER_WIDTH }}>
+             <div className="flex-shrink-0 border-r border-[#111]" style={{ width: TRACK_HEADER_WIDTH }}>
                 <TrackControl 
                   track={masterTrack}
                   onUpdate={updateTrack}
@@ -1009,7 +1033,7 @@ function App() {
                 />
              </div>
              {/* Master Visualizer (Right) */}
-             <div className="flex-1 p-2 bg-gray-900 flex items-center justify-center">
+             <div className="flex-1 p-2 bg-[#1e1e1e] flex items-center justify-center">
                  <MasterVisualizer 
                     isPlaying={playbackState.isPlaying} 
                     config={visualizerConfig}
@@ -1018,7 +1042,7 @@ function App() {
          </div>
 
          {/* Navigator / Scrollbar (Bottom Fixed) */}
-         <div className="h-5 bg-gray-950 border-t border-gray-800">
+         <div className="h-5 bg-[#111] border-t border-[#111]">
              <div 
                 ref={navigatorRef}
                 onScroll={handleNavigatorScroll}

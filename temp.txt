@@ -1,0 +1,86 @@
+11:  clips: AudioClip[];
+35:  onSplitClip: (clipId: string, splitTime: number) => void;
+37:  onClipResize: (clipId: string, newStartTime: number, newDuration: number, newOffset: number) => void;
+51:  onClipDoubleClick?: (clipId: string) => void;
+78:  clips, 
+116:  // Snapshot of clip state at start of resize
+119:  // Keep track of the initial offset for ALL selected clips during a drag
+151:  const totalDuration = Math.max(300, ...clips.map(c => c.startTime + c.duration)); 
+270:              const clipElements = timelineRef.current.querySelectorAll('[data-clip-id]');
+272:              clipElements.forEach(el => {
+273:                  const clipRect = el.getBoundingClientRect();
+274:                  const clipRelX = clipRect.left - rect.left + timelineRef.current!.scrollLeft;
+275:                  const clipRelY = clipRect.top - rect.top + timelineRef.current!.scrollTop;
+277:                  if (mX < clipRelX + clipRect.width &&
+278:                      mX + mW > clipRelX &&
+279:                      mY < clipRelY + clipRect.height &&
+280:                      mY + mH > clipRelY) {
+281:                          const id = el.getAttribute('data-clip-id');
+321:             const clip = clips.find(c => c.id === resizingClipId);
+322:             if (!clip) return;
+346:                 const minDelta = -resizeStartValues.offset / clip.playbackRate;
+353:                 newOffset = resizeStartValues.offset + (desiredDelta * clip.playbackRate);
+367:  }, [resizingClipId, resizeEdge, resizeStartX, resizeStartValues, zoom, snap, onClipResize, loopDragType, loopDragStartX, loopDragStartValues, loopRegion, setLoopRegion, bpm, marquee, clips, rulerDrag]);
+429:    const clipElement = target.closest('[data-clip-id]');
+457:    // NOTE: Blade tool logic is now handled in the clip's onClick to prevent bubbling issues.
+459:    if (!clipElement && !automationLane && !target.classList.contains('resize-handle')) {
+474:      if (!target.closest('[data-clip-id]') && !target.closest('.loop-region-handle') && !target.closest('[data-automation-track-id]') && !target.closest('.ruler-track')) {
+524:        const draggedClip = clips.find(c => c.id === draggedClipId);
+530:        // We want the *START* of the clip to land on the grid, not the mouse cursor.
+534:        // 1. Calculate where the clip start WOULD be if we dropped it at the raw mouse position
+540:        // 3. Calculate the delta applied to all other selected clips
+544:            const clip = clips.find(c => c.id === id);
+545:            if (!clip) return null;
+548:                id: clip.id,
+549:                startTime: Math.max(0, clip.startTime + timeDelta),
+550:                trackId: id === draggedClipId ? trackId : clip.trackId 
+564:  const handleDragStart = (e: React.DragEvent, clip: AudioClip) => {
+571:     if (!selectedClipIds.includes(clip.id)) {
+572:         setSelectedClipIds([clip.id]);
+573:         currentSelection = [clip.id];
+578:     // Calculate how far the mouse is from the start of the clip (in seconds)
+584:         // Store the offset so we can subtract it during drop to find the clip start
+585:         if (id === clip.id) {
+588:             offsets[id] = 0; // Not strictly needed for follower clips in this logic
+593:     setDraggedClipId(clip.id);
+597:  const handleResizeStart = (e: React.MouseEvent, clip: AudioClip, edge: 'START' | 'END') => {
+600:      setResizingClipId(clip.id);
+604:          startTime: clip.startTime,
+605:          duration: clip.duration,
+606:          offset: clip.offset
+608:      if (!selectedClipIds.includes(clip.id)) {
+609:          setSelectedClipIds([clip.id]);
+621:  const handleClipContextMenu = (e: React.MouseEvent, clipId: string) => {
+624:      if (!selectedClipIds.includes(clipId)) {
+625:          setSelectedClipIds([clipId]);
+636:          targetId: clipId,
+680:                  // For split, we typically act on the hovered clip or all selected clips at the playhead/click point
+681:                  // Implementing split for single target clip at the click time
+688:                      const clip = clips.find(c => c.id === idsToActOn[0]);
+689:                      if (clip) {
+690:                          const newName = prompt("Rename clip:", clip.name);
+694:                      alert("Can only rename one clip at a time.");
+701:                  else if (idsToActOn.length > 1) alert("Flattening multiple clips not supported yet.");
+779:  const renderClipContent = (clip: AudioClip, track: Track) => {
+780:      const singleLoopDuration = clip.buffer.duration / clip.playbackRate;
+784:      const totalVisibleTime = clip.duration + (clip.offset / clip.playbackRate);
+785:      const loopsNeeded = clip.loop ? Math.ceil(totalVisibleTime / singleLoopDuration) : 1;
+788:      const shiftPx = (clip.offset / clip.playbackRate) * zoom;
+797:                     if (!clip.loop && i > 0) return null;
+805:                             <Waveform clip={clip} width={singleLoopWidth} height={TRACK_HEIGHT - 10} color={i === 0 ? "#111111" : "#111111aa"} />
+937:                      {clips.filter(c => c.trackId === track.id).map(clip => {
+938:                          const isSelected = selectedClipIds.includes(clip.id);
+941:                              key={clip.id}
+942:                              data-clip-id={clip.id}
+944:                              onDragStart={(e) => handleDragStart(e, clip)}
+945:                              onContextMenu={(e) => handleClipContextMenu(e, clip.id)}
+953:                                           onSplitClip(clip.id, clickTime);
+956:                                      if (tool === 'MOVE' && !isSelected && !e.shiftKey) setSelectedClipIds([clip.id]);
+959:                              onDoubleClick={(e) => { e.stopPropagation(); onClipDoubleClick?.(clip.id); }}
+961:                                  if (tool === 'MOVE' && !isSelected && !e.shiftKey) setSelectedClipIds([clip.id]); 
+966:                              style={{ left: `${clip.startTime * zoom}px`, width: `${clip.duration * zoom}px` }}
+969:                              {clip.loop && <div className="absolute top-0 right-4 p-1 text-white/70 z-30"><RotateCw size={10} /></div>}
+970:                              <div className="absolute inset-0 z-10">{renderClipContent(clip, track)}</div>
+971:                              <div className="absolute top-0 left-0 z-20 max-w-full w-full bg-black/30"><div className="px-1 py-0.5 text-[9px] text-white truncate select-none font-medium flex items-center gap-1">{clip.name}</div></div>
+977:                                      <div className="absolute top-0 bottom-0 left-0 w-2 cursor-col-resize hover:bg-white/30 z-40 flex items-center justify-center resize-handle group/handle" onMouseDown={(e) => handleResizeStart(e, clip, 'START')}>
+981:                                      <div className="absolute top-0 bottom-0 right-0 w-2 cursor-col-resize hover:bg-white/30 z-40 flex items-center justify-center resize-handle group/handle" onMouseDown={(e) => handleResizeStart(e, clip, 'END')}>

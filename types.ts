@@ -51,14 +51,14 @@ export interface PlaybackState {
   currentTime: number; 
 }
 
-export type PluginType = 'DELAY' | 'REVERB' | 'DISTORTION' | 'HIGHPASS' | 'LOWPASS';
+export type PluginType = 'DELAY' | 'REVERB' | 'DISTORTION' | 'HIGHPASS' | 'LOWPASS' | 'LIMITER' | 'SIDECHAIN' | 'EQ8' | 'COMPRESSOR' | 'BITCRUSHER';
 
 export interface AudioPlugin {
   id: string;
   type: PluginType;
   enabled: boolean;
   params: {
-    [key: string]: number;
+    [key: string]: number | string;
   };
 }
 

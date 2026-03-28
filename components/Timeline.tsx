@@ -14,6 +14,8 @@ interface TimelineProps {
   zoom: number; // pixels per second
   snap: boolean;
   tool: ToolType;
+  followPlayhead: boolean;
+  setFollowPlayhead: (follow: boolean) => void;
   
   onClipsUpdate: (updates: { id: string, startTime: number, trackId?: string }[]) => void;
   onFileDrop: (file: File, trackId: string, time: number) => void;
@@ -82,6 +84,8 @@ export const Timeline: React.FC<TimelineProps> = ({
   setZoom,
   snap,
   tool,
+  followPlayhead,
+  setFollowPlayhead,
   onClipsUpdate, 
   onFileDrop,
   onSeek,
@@ -119,8 +123,8 @@ export const Timeline: React.FC<TimelineProps> = ({
   // Keep track of the initial offset for ALL selected clips during a drag
   const [dragOffsets, setDragOffsets] = useState<{ [id: string]: number }>({});
   
-  // Ruler Zoom Drag State
-  const [rulerDrag, setRulerDrag] = useState<{startY: number, initialZoom: number} | null>(null);
+  // Ruler Zoom/Scroll Drag State
+  const [rulerDrag, setRulerDrag] = useState<{startY: number, startX: number, initialZoom: number, initialScrollLeft: number} | null>(null);
   const isRulerDraggingRef = useRef(false);
 
   // Marquee State
@@ -236,16 +240,22 @@ export const Timeline: React.FC<TimelineProps> = ({
   // Global Mouse Move
   useEffect(() => {
       const handleMouseMove = (e: MouseEvent) => {
-          // Ruler Zoom Drag Logic
-          if (rulerDrag && setZoom) {
+          // Ruler Zoom/Scroll Drag Logic
+          if (rulerDrag && setZoom && timelineRef.current) {
               const deltaY = e.clientY - rulerDrag.startY;
-              if (Math.abs(deltaY) > 3) isRulerDraggingRef.current = true;
+              const deltaX = e.clientX - rulerDrag.startX;
+              
+              if (Math.abs(deltaY) > 3 || Math.abs(deltaX) > 3) isRulerDraggingRef.current = true;
 
               // Drag Down (+Y) -> Zoom In. Drag Up (-Y) -> Zoom Out.
               // Sensitivity: 1px = 1% change roughly
               const factor = 1 + (deltaY * 0.005);
               const newZoom = Math.max(10, Math.min(500, rulerDrag.initialZoom * factor));
               setZoom(newZoom);
+              
+              // Drag Left/Right -> Scroll
+              timelineRef.current.scrollLeft = rulerDrag.initialScrollLeft - deltaX;
+              
               return;
           }
 
@@ -255,11 +265,15 @@ export const Timeline: React.FC<TimelineProps> = ({
           const relativeY = e.clientY - rect.top + timelineRef.current.scrollTop;
 
           if (marquee?.active) {
-              setMarquee(prev => prev ? { ...prev, currentX: relativeX, currentY: relativeY } : null);
+              let currentX = relativeX;
+              if (snap) {
+                  currentX = snapToGrid(relativeX / zoom) * zoom;
+              }
+              setMarquee(prev => prev ? { ...prev, currentX, currentY: relativeY } : null);
               
-              const mX = Math.min(marquee.startX, relativeX);
+              const mX = Math.min(marquee.startX, currentX);
               const mY = Math.min(marquee.startY, relativeY);
-              const mW = Math.abs(relativeX - marquee.startX);
+              const mW = Math.abs(currentX - marquee.startX);
               const mH = Math.abs(relativeY - marquee.startY);
               
               const newSelectedIds: string[] = [];
@@ -389,7 +403,9 @@ export const Timeline: React.FC<TimelineProps> = ({
       
       setRulerDrag({
           startY: e.clientY,
-          initialZoom: zoom
+          startX: e.clientX,
+          initialZoom: zoom,
+          initialScrollLeft: timelineRef.current?.scrollLeft || 0
       });
       isRulerDraggingRef.current = false; // Will set to true on move
   };
@@ -470,8 +486,12 @@ export const Timeline: React.FC<TimelineProps> = ({
       if (!target.closest('[data-clip-id]') && !target.closest('.loop-region-handle') && !target.closest('[data-automation-track-id]') && !target.closest('.ruler-track')) {
           if (tool === 'MOVE') {
               const rect = timelineRef.current!.getBoundingClientRect();
-              const x = e.clientX - rect.left + timelineRef.current!.scrollLeft;
+              let x = e.clientX - rect.left + timelineRef.current!.scrollLeft;
               const y = e.clientY - rect.top + timelineRef.current!.scrollTop;
+              
+              if (snap) {
+                  x = snapToGrid(x / zoom) * zoom;
+              }
               
               setMarquee({
                   startX: x,
@@ -502,7 +522,9 @@ export const Timeline: React.FC<TimelineProps> = ({
                         file.type === 'video/mp4' || 
                         file.type === 'video/webm' || // Chromebook Screen Recording
                         file.name.toLowerCase().endsWith('.webm') ||
-                        file.name.toLowerCase().endsWith('.m4a');
+                        file.name.toLowerCase().endsWith('.m4a') ||
+                        file.name.toLowerCase().endsWith('.aif') ||
+                        file.name.toLowerCase().endsWith('.aiff');
         if (isAudio) {
           onFileDrop(file, trackId, dropTime);
         }
@@ -743,7 +765,7 @@ export const Timeline: React.FC<TimelineProps> = ({
 
       return (
           <>
-              <path d={pathData} stroke="#60a5fa" strokeWidth="2" fill="none" />
+              <path d={pathData} stroke="#ef4444" strokeWidth="2" fill="none" />
               {sortedPoints.map(p => (
                   <g key={p.id}>
                     <circle 
@@ -757,7 +779,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                         cx={p.time * zoom} 
                         cy={(1 - p.value) * (AUTOMATION_HEIGHT - 16) + 8} 
                         r="4" 
-                        fill="#3b82f6" 
+                        fill="#ef4444" 
                         className="pointer-events-none"
                     />
                   </g>
@@ -789,10 +811,10 @@ export const Timeline: React.FC<TimelineProps> = ({
                      return (
                          <div 
                             key={i} 
-                            className="flex-shrink-0 border-r border-dashed border-white/20"
+                            className="flex-shrink-0 border-r border-dashed border-black/20"
                             style={{ width: singleLoopWidth, height: '100%' }}
                          >
-                             <Waveform clip={clip} width={singleLoopWidth} height={TRACK_HEIGHT - 10} color={i === 0 ? "#ffffff" : "#ffffffaa"} />
+                             <Waveform clip={clip} width={singleLoopWidth} height={TRACK_HEIGHT - 10} color={i === 0 ? "#111111" : "#111111aa"} />
                          </div>
                      );
                  })}
@@ -814,13 +836,13 @@ export const Timeline: React.FC<TimelineProps> = ({
             ref={fileInputRef} 
             onChange={handleFileSelect}
             className="hidden" 
-            accept="audio/*,video/webm,.webm,.m4a,.mp4" 
+            accept="audio/*,video/webm,.webm,.m4a,.mp4,.aif,.aiff,.wav,.mp3,.flac,.ogg" 
         />
 
         {/* Marquee Box */}
         {marquee?.active && (
             <div 
-                className="absolute bg-blue-500/20 border border-blue-400 z-50 pointer-events-none"
+                className="absolute bg-[#ff7b00]/20 border border-[#ff7b00] z-50 pointer-events-none"
                 style={{
                     left: Math.min(marquee.startX, marquee.currentX),
                     top: Math.min(marquee.startY, marquee.currentY),
@@ -831,15 +853,22 @@ export const Timeline: React.FC<TimelineProps> = ({
         )}
 
         <div 
-            className="absolute top-0 bottom-0 w-0.5 bg-red-500 z-30 pointer-events-none"
+            className="absolute top-0 bottom-0 w-px bg-[#ff7b00] z-30 pointer-events-none"
             style={{ left: `${currentTime * zoom}px`, height: '100%' }}
         >
-            <div className="w-3 h-3 -ml-1.5 bg-red-500 transform rotate-45 -mt-1.5" />
+            <div 
+                className="w-2.5 h-2.5 -ml-[5px] bg-[#ff7b00] transform rotate-45 -mt-1 cursor-pointer pointer-events-auto" 
+                onContextMenu={(e) => {
+                    e.preventDefault();
+                    setFollowPlayhead(!followPlayhead);
+                }}
+                title={`Right-click to toggle follow playhead (Currently: ${followPlayhead ? 'ON' : 'OFF'})`}
+            />
         </div>
 
         {/* Ruler - Now with sticky top-0 to stick inside the App-level scroll container */}
         <div 
-          className="border-b border-gray-700 bg-gray-900 sticky top-0 z-20 flex cursor-context-menu ruler-track" 
+          className="border-b border-[#111] bg-[#2d2d2d] sticky top-0 z-20 flex cursor-context-menu ruler-track" 
           style={{ width: `${totalBars * pixelsPerBar}px`, height: `${TIMELINE_RULER_HEIGHT}px` }}
           onContextMenu={handleRulerContextMenu}
           onClick={handleRulerClick}
@@ -849,23 +878,23 @@ export const Timeline: React.FC<TimelineProps> = ({
              {barsArray.map((_, i) => (
                  <div 
                     key={i} 
-                    className="relative h-full border-l border-gray-600/50 pointer-events-none" 
+                    className="relative h-full border-l border-[#444] pointer-events-none" 
                     style={{ width: `${pixelsPerBar}px` }}
                  >
-                     <span className="absolute top-1 left-1 text-[10px] text-gray-500 font-mono select-none">{i + 1}</span>
-                     <div className="absolute bottom-0 left-[25%] h-1 w-px bg-gray-700" />
-                     <div className="absolute bottom-0 left-[50%] h-1.5 w-px bg-gray-700" />
-                     <div className="absolute bottom-0 left-[75%] h-1 w-px bg-gray-700" />
+                     <span className="absolute top-1 left-1 text-[9px] text-[#999] font-mono select-none">{i + 1}</span>
+                     <div className="absolute bottom-0 left-[25%] h-1 w-px bg-[#444]" />
+                     <div className="absolute bottom-0 left-[50%] h-1.5 w-px bg-[#444]" />
+                     <div className="absolute bottom-0 left-[75%] h-1 w-px bg-[#444]" />
                  </div>
              ))}
 
              {/* Markers */}
              {markers.map((m, i) => (
-                 <div key={i} className="absolute top-0 h-full border-l border-blue-500 group z-20" style={{ left: m.time * zoom }}>
+                 <div key={i} className="absolute top-0 h-full border-l border-[#ff7b00] group z-20" style={{ left: m.time * zoom }}>
                      {/* Marker Line */}
-                     <div className="absolute top-8 w-px h-[2000px] bg-blue-500/20 pointer-events-none"></div>
+                     <div className="absolute top-8 w-px h-[2000px] bg-[#ff7b00]/20 pointer-events-none"></div>
                      {/* Marker Label */}
-                     <div className="flex items-center bg-blue-600 text-white text-[9px] px-1 rounded-r shadow cursor-pointer hover:bg-blue-500 transition-colors">
+                     <div className="flex items-center bg-[#ff7b00] text-black text-[9px] px-1 rounded-none shadow-none cursor-pointer hover:bg-[#ff9933] transition-none">
                         <Flag size={8} className="mr-1" />
                         {m.label}
                      </div>
@@ -875,20 +904,20 @@ export const Timeline: React.FC<TimelineProps> = ({
              {/* Loop Region Overlay */}
              {loopRegion.enabled && (
                  <div 
-                    className="absolute top-0 h-full bg-yellow-400/20 border-l border-r border-yellow-400/50 group loop-region-handle cursor-move"
+                    className="absolute top-0 h-full bg-[#ff7b00]/20 border-l border-r border-[#ff7b00]/50 group loop-region-handle cursor-move"
                     style={{ left: loopRegion.start * zoom, width: (loopRegion.end - loopRegion.start) * zoom }}
                     onMouseDown={(e) => handleLoopDragStart(e, 'MOVE')}
                     onClick={(e) => e.stopPropagation()}
                  >
-                     <div className="absolute top-0 left-0 w-full h-1 bg-yellow-400/50"></div>
+                     <div className="absolute top-0 left-0 w-full h-1 bg-[#ff7b00]/50"></div>
                      
                      {/* Handles */}
                      <div 
-                        className="absolute top-0 left-0 w-2 h-full cursor-ew-resize hover:bg-yellow-400/50 z-10"
+                        className="absolute top-0 left-0 w-2 h-full cursor-ew-resize hover:bg-[#ff7b00]/50 z-10"
                         onMouseDown={(e) => handleLoopDragStart(e, 'START')}
                      />
                      <div 
-                        className="absolute top-0 right-0 w-2 h-full cursor-ew-resize hover:bg-yellow-400/50 z-10"
+                        className="absolute top-0 right-0 w-2 h-full cursor-ew-resize hover:bg-[#ff7b00]/50 z-10"
                         onMouseDown={(e) => handleLoopDragStart(e, 'END')}
                      />
                  </div>
@@ -908,20 +937,20 @@ export const Timeline: React.FC<TimelineProps> = ({
             return (
                 <div key={track.id} className="flex flex-col z-10">
                   <div 
-                      className="relative border-b border-gray-800 hover:bg-white/5 transition-colors box-border"
+                      className="relative border-b border-[#111] hover:bg-white/5 transition-none box-border"
                       onDragOver={handleDragOver}
                       onDrop={(e) => handleDrop(e, track.id)}
                       onContextMenu={(e) => handleTrackContextMenu(e, track.id)}
                       style={{ 
                           height: `${TRACK_HEIGHT}px`,
-                          backgroundImage: 'linear-gradient(to right, #374151 1px, transparent 1px)',
+                          backgroundImage: 'linear-gradient(to right, #333 1px, transparent 1px)',
                           backgroundSize: `${pixelsPerBar}px 100%`,
                           backgroundPosition: '0 0'
                       }}
                   >
                       <div 
                           className="absolute inset-0 pointer-events-none" 
-                          style={{ backgroundImage: 'linear-gradient(to right, #374151 1px, transparent 1px)', backgroundSize: `${pixelsPerBeat}px 100%`, opacity: 0.1 }}
+                          style={{ backgroundImage: 'linear-gradient(to right, #333 1px, transparent 1px)', backgroundSize: `${pixelsPerBeat}px 100%`, opacity: 0.5 }}
                       />
 
                       {clips.filter(c => c.trackId === track.id).map(clip => {
@@ -948,29 +977,27 @@ export const Timeline: React.FC<TimelineProps> = ({
                               }} 
                               onDoubleClick={(e) => { e.stopPropagation(); onClipDoubleClick?.(clip.id); }}
                               onMouseDown={(e) => { 
-                                  // Mouse down logic for MOVE is handled here to prevent dragging issue
-                                  // Only select on mouse down, actual drag start is handled by onDragStart
                                   if (tool === 'MOVE' && !isSelected && !e.shiftKey) setSelectedClipIds([clip.id]); 
                               }}
-                              className={`absolute top-2 bottom-2 rounded-md overflow-hidden border shadow-md group transition-all 
+                              className={`absolute top-1 bottom-1 rounded-none overflow-hidden border shadow-none group transition-none 
                               ${tool === 'MOVE' ? 'cursor-move' : 'cursor-text hover:brightness-110'} 
-                              ${isSelected ? 'border-white ring-2 ring-blue-500/50 z-20' : 'border-white/20 bg-gray-800 hover:border-white/40 z-10'}`}
+                              ${isSelected ? 'border-white z-20' : 'border-[#111] bg-[#444] hover:border-[#999] z-10'}`}
                               style={{ left: `${clip.startTime * zoom}px`, width: `${clip.duration * zoom}px` }}
                           >
-                              <div className="absolute inset-0 opacity-60" style={{ backgroundColor: track.muted ? '#4b5563' : track.color }}></div>
+                              <div className="absolute inset-0 opacity-80" style={{ backgroundColor: track.muted ? '#444' : track.color }}></div>
                               {clip.loop && <div className="absolute top-0 right-4 p-1 text-white/70 z-30"><RotateCw size={10} /></div>}
                               <div className="absolute inset-0 z-10">{renderClipContent(clip, track)}</div>
-                              <div className="absolute top-1 left-1 z-20 max-w-full"><div className="px-1 py-0.5 bg-black/40 rounded text-[10px] text-white truncate select-none font-medium flex items-center gap-1">{clip.name}</div></div>
+                              <div className="absolute top-0 left-0 z-20 max-w-full w-full bg-black/30"><div className="px-1 py-0.5 text-[9px] text-white truncate select-none font-medium flex items-center gap-1">{clip.name}</div></div>
                               
                               {/* Resize Handles */}
                               {tool === 'MOVE' && isSelected && selectedClipIds.length === 1 && (
                                   <>
                                       {/* Left Handle */}
-                                      <div className="absolute top-0 bottom-0 left-0 w-3 cursor-col-resize hover:bg-white/30 z-40 flex items-center justify-center resize-handle group/handle" onMouseDown={(e) => handleResizeStart(e, clip, 'START')}>
+                                      <div className="absolute top-0 bottom-0 left-0 w-2 cursor-col-resize hover:bg-white/30 z-40 flex items-center justify-center resize-handle group/handle" onMouseDown={(e) => handleResizeStart(e, clip, 'START')}>
                                           <GripVertical size={10} className="text-white/0 group-hover/handle:text-white/80" />
                                       </div>
                                       {/* Right Handle */}
-                                      <div className="absolute top-0 bottom-0 right-0 w-3 cursor-col-resize hover:bg-white/30 z-40 flex items-center justify-center resize-handle group/handle" onMouseDown={(e) => handleResizeStart(e, clip, 'END')}>
+                                      <div className="absolute top-0 bottom-0 right-0 w-2 cursor-col-resize hover:bg-white/30 z-40 flex items-center justify-center resize-handle group/handle" onMouseDown={(e) => handleResizeStart(e, clip, 'END')}>
                                           <GripVertical size={10} className="text-white/0 group-hover/handle:text-white/80" />
                                       </div>
                                   </>
@@ -981,46 +1008,46 @@ export const Timeline: React.FC<TimelineProps> = ({
                   
                   {track.showAutomation && (
                       <div 
-                          className="bg-gray-900/50 border-b border-gray-800 relative cursor-crosshair box-border"
+                          className="bg-[#2d2d2d] border-b border-[#111] relative cursor-crosshair box-border"
                           data-automation-track-id={track.id}
                           style={{ minWidth: `${totalBars * pixelsPerBar}px`, height: `${AUTOMATION_HEIGHT}px` }}
                       >
-                          <div className="absolute inset-0 pointer-events-none border-b border-dashed border-white/10 top-1/2"></div>
-                          <div className="absolute top-1 left-1 text-[9px] text-blue-400 font-bold bg-black/50 px-1 rounded pointer-events-none">{track.selectedAutomationId === 'pan' ? 'Pan' : track.selectedAutomationId === 'volume' ? 'Vol' : track.selectedAutomationId?.split(':')[1].toUpperCase()}</div>
+                          <div className="absolute inset-0 pointer-events-none border-b border-dashed border-[#444] top-1/2"></div>
+                          <div className="absolute top-1 left-1 text-[9px] text-[#ef4444] font-bold bg-[#111] px-1 rounded-none pointer-events-none">{track.selectedAutomationId === 'pan' ? 'Pan' : track.selectedAutomationId === 'volume' ? 'Vol' : track.selectedAutomationId?.split(':')[1].toUpperCase()}</div>
                           <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ overflow: 'visible' }}>{renderAutomationPoints(track)}</svg>
                       </div>
                   )}
                 </div>
             );
           })}
-          <div className="h-64 flex items-center justify-center text-gray-800 select-none pointer-events-none">End of tracks</div>
+          <div className="h-64 flex items-center justify-center text-[#444] select-none pointer-events-none">End of tracks</div>
         </div>
 
         {/* Marker Modal Dialog */}
         {markerModal && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setMarkerModal(null)}>
                 <div 
-                    className="bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-6 w-full max-w-sm" 
+                    className="bg-[#2d2d2d] border border-[#111] rounded-none p-6 w-full max-w-sm" 
                     onClick={e => e.stopPropagation()}
                 >
                     <div className="flex justify-between items-center mb-4">
-                        <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                            <Flag size={20} className="text-blue-400" />
+                        <h3 className="text-lg font-bold text-[#d4d4d4] flex items-center gap-2">
+                            <Flag size={20} className="text-[#ff7b00]" />
                             Add Marker
                         </h3>
-                        <button onClick={() => setMarkerModal(null)} className="text-gray-400 hover:text-white">
+                        <button onClick={() => setMarkerModal(null)} className="text-[#999] hover:text-[#d4d4d4]">
                             <X size={20} />
                         </button>
                     </div>
                     
                     <div className="space-y-4">
                         <div>
-                            <label className="block text-xs font-bold text-gray-400 uppercase mb-1">
+                            <label className="block text-xs font-bold text-[#999] uppercase mb-1">
                                 Label Name
                             </label>
                             <input 
                                 type='text' 
-                                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white focus:border-blue-500 outline-none transition-colors"
+                                className="w-full bg-[#111] border border-[#111] rounded-none px-3 py-2 text-[#d4d4d4] focus:border-[#ff7b00] outline-none transition-none"
                                 value={markerInputValue}
                                 onChange={(e) => setMarkerInputValue(e.target.value)}
                                 autoFocus
@@ -1031,13 +1058,13 @@ export const Timeline: React.FC<TimelineProps> = ({
                         <div className="flex gap-2">
                             <button 
                                 onClick={() => setMarkerModal(null)}
-                                className="flex-1 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg transition-colors font-medium text-sm"
+                                className="flex-1 py-2 bg-[#444] hover:bg-[#555] text-[#d4d4d4] rounded-none transition-none font-medium text-sm"
                             >
                                 Cancel
                             </button>
                             <button 
                                 onClick={handleMarkerSubmit}
-                                className="flex-1 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors font-medium text-sm flex items-center justify-center gap-1"
+                                className="flex-1 py-2 bg-[#ff7b00] hover:bg-[#ff9933] text-black rounded-none transition-none font-medium text-sm flex items-center justify-center gap-1"
                             >
                                 <Check size={16} /> Confirm
                             </button>
@@ -1049,37 +1076,37 @@ export const Timeline: React.FC<TimelineProps> = ({
 
         {contextMenu && (
             <div 
-                className="fixed z-[100] w-56 bg-gray-800 border border-gray-600 rounded-lg shadow-xl py-1 text-sm text-gray-200 animate-in fade-in zoom-in-95 duration-100"
+                className="fixed z-[100] w-56 bg-[#2d2d2d] border border-[#111] rounded-none shadow-none py-1 text-sm text-[#d4d4d4] animate-in fade-in zoom-in-95 duration-100"
                 style={{ top: contextMenu.y, left: contextMenu.x }}
             >
                 {contextMenu.type === 'CLIP' ? (
                     <>
                       {selectedClipIds.length === 2 && (
                           <>
-                            <button onClick={(e) => handleMenuAction(e, 'auto-align')} className="w-full text-left px-4 py-2 hover:bg-gray-700 flex items-center gap-2 text-yellow-400"><ArrowLeftRight size={14} /> Auto-Align Phase</button>
-                            <div className="h-px bg-gray-700 my-1" />
+                            <button onClick={(e) => handleMenuAction(e, 'auto-align')} className="w-full text-left px-4 py-2 hover:bg-[#444] flex items-center gap-2 text-[#ff7b00]"><ArrowLeftRight size={14} /> Auto-Align Phase</button>
+                            <div className="h-px bg-[#111] my-1" />
                           </>
                       )}
-                      <button onClick={(e) => handleMenuAction(e, 'split')} className="w-full text-left px-4 py-2 hover:bg-gray-700 flex items-center gap-2"><Scissors size={14} /> Split</button>
-                      <button onClick={(e) => handleMenuAction(e, 'copy')} className="w-full text-left px-4 py-2 hover:bg-gray-700 flex items-center gap-2"><Copy size={14} /> Copy</button>
-                      <button onClick={(e) => handleMenuAction(e, 'loop')} className="w-full text-left px-4 py-2 hover:bg-gray-700 flex items-center gap-2"><RotateCw size={14} /> Toggle Loop</button>
-                      <button onClick={(e) => handleMenuAction(e, 'rename')} className="w-full text-left px-4 py-2 hover:bg-gray-700 flex items-center gap-2"><Pencil size={14} /> Rename</button>
-                      <button onClick={(e) => handleMenuAction(e, 'duplicate')} className="w-full text-left px-4 py-2 hover:bg-gray-700 flex items-center gap-2"><Copy size={14} /> Duplicate</button>
-                      <div className="h-px bg-gray-700 my-1" />
-                      <button onClick={(e) => handleMenuAction(e, 'flatten')} className="w-full text-left px-4 py-2 hover:bg-gray-700 flex items-center gap-2 text-blue-400"><FileStack size={14} /> Flatten Clip</button>
-                      <div className="h-px bg-gray-700 my-1" />
-                      <button onClick={(e) => handleMenuAction(e, 'delete')} className="w-full text-left px-4 py-2 hover:bg-red-900/50 text-red-400 hover:text-red-300 flex items-center gap-2"><Trash2 size={14} /> Delete</button>
+                      <button onClick={(e) => handleMenuAction(e, 'split')} className="w-full text-left px-4 py-2 hover:bg-[#444] flex items-center gap-2"><Scissors size={14} /> Split</button>
+                      <button onClick={(e) => handleMenuAction(e, 'copy')} className="w-full text-left px-4 py-2 hover:bg-[#444] flex items-center gap-2"><Copy size={14} /> Copy</button>
+                      <button onClick={(e) => handleMenuAction(e, 'loop')} className="w-full text-left px-4 py-2 hover:bg-[#444] flex items-center gap-2"><RotateCw size={14} /> Toggle Loop</button>
+                      <button onClick={(e) => handleMenuAction(e, 'rename')} className="w-full text-left px-4 py-2 hover:bg-[#444] flex items-center gap-2"><Pencil size={14} /> Rename</button>
+                      <button onClick={(e) => handleMenuAction(e, 'duplicate')} className="w-full text-left px-4 py-2 hover:bg-[#444] flex items-center gap-2"><Copy size={14} /> Duplicate</button>
+                      <div className="h-px bg-[#111] my-1" />
+                      <button onClick={(e) => handleMenuAction(e, 'flatten')} className="w-full text-left px-4 py-2 hover:bg-[#444] flex items-center gap-2 text-[#ff7b00]"><FileStack size={14} /> Flatten Clip</button>
+                      <div className="h-px bg-[#111] my-1" />
+                      <button onClick={(e) => handleMenuAction(e, 'delete')} className="w-full text-left px-4 py-2 hover:bg-[#ef4444]/20 text-[#ef4444] flex items-center gap-2"><Trash2 size={14} /> Delete</button>
                     </>
                 ) : contextMenu.type === 'BACKGROUND' ? (
                     <>
-                      <button onClick={(e) => handleMenuAction(e, 'paste')} disabled={!canPaste} className={`w-full text-left px-4 py-2 flex items-center gap-2 ${canPaste ? 'hover:bg-gray-700' : 'opacity-50 cursor-not-allowed'}`}><ClipboardPaste size={14} /> Paste</button>
-                      <div className="h-px bg-gray-700 my-1" />
-                      <button onClick={(e) => handleMenuAction(e, 'import-file')} className="w-full text-left px-4 py-2 hover:bg-gray-700 flex items-center gap-2"><Upload size={14} className="text-blue-400" /> Import Audio File</button>
+                      <button onClick={(e) => handleMenuAction(e, 'paste')} disabled={!canPaste} className={`w-full text-left px-4 py-2 flex items-center gap-2 ${canPaste ? 'hover:bg-[#444]' : 'opacity-50 cursor-not-allowed'}`}><ClipboardPaste size={14} /> Paste</button>
+                      <div className="h-px bg-[#111] my-1" />
+                      <button onClick={(e) => handleMenuAction(e, 'import-file')} className="w-full text-left px-4 py-2 hover:bg-[#444] flex items-center gap-2"><Upload size={14} className="text-[#ff7b00]" /> Import Audio File</button>
                     </>
                 ) : (
                     <>
-                        <div className="px-4 py-2 text-xs font-bold text-gray-500 uppercase">Marker Options</div>
-                        <button onClick={(e) => handleMenuAction(e, 'add-marker')} className="w-full text-left px-4 py-2 hover:bg-gray-700 flex items-center gap-2"><Flag size={14} className="text-blue-400" /> Place Marker</button>
+                        <div className="px-4 py-2 text-xs font-bold text-[#999] uppercase">Marker Options</div>
+                        <button onClick={(e) => handleMenuAction(e, 'add-marker')} className="w-full text-left px-4 py-2 hover:bg-[#444] flex items-center gap-2"><Flag size={14} className="text-[#ff7b00]" /> Place Marker</button>
                     </>
                 )}
             </div>

@@ -9,11 +9,12 @@ export const TRACK_HEIGHT = 110;
 export const AUTOMATION_HEIGHT = 80;
 
 export const TRACK_COLORS = [
-  '#3b82f6', // blue
-  '#ef4444', // red
-  '#10b981', // green
-  '#f59e0b', // amber
-  '#8b5cf6', // violet
-  '#ec4899', // pink
-  '#06b6d4', // cyan
+  '#00a8ff', // cerulean blue
+  '#3498db', // classic blue
+  '#5f27cd', // deep purple
+  '#8e44ad', // dark purple
+  '#fd79a8', // pink
+  '#e84393', // dark pink
+  '#00cec9', // teal
+  '#00b894', // greenish teal
 ];
