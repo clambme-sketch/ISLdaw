@@ -1,7 +1,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { Track } from '../types';
-import { Volume2, VolumeX, Mic, Headphones, Activity, TrendingUp, ChevronDown, Eye } from 'lucide-react';
+import { Volume2, VolumeX, Mic, Headphones, Activity, TrendingUp, ChevronDown, Eye, AlertTriangle } from 'lucide-react';
 import { audioService } from '../services/audioEngine';
 import { TRACK_HEIGHT, AUTOMATION_HEIGHT } from '../constants';
 
@@ -32,8 +32,8 @@ export const TrackControl: React.FC<TrackControlProps> = ({
     onOpenVisualizerSettings
 }) => {
   const isMaster = track.isMaster;
+  const [hasClipped, setHasClipped] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [peak, setPeak] = useState(0);
 
   // Meter Animation
   useEffect(() => {
@@ -73,8 +73,11 @@ export const TrackControl: React.FC<TrackControlProps> = ({
                 peakHoldTimer--;
                 if (peakHoldTimer <= 0) localPeak *= 0.95; 
             }
-            
-            setPeak(localPeak);
+
+            // Check for clipping (persistent)
+            if (framePeak >= 0.99) {
+                setHasClipped(true);
+            }
 
             const width = canvasRef.current!.width;
             const height = canvasRef.current!.height;
@@ -121,7 +124,18 @@ export const TrackControl: React.FC<TrackControlProps> = ({
     >
       <div className="flex items-center justify-between mb-1.5">
         <div className="flex items-center gap-2">
-            {!isMaster && <div className="w-2 h-2 rounded-none" style={{ backgroundColor: track.color }} />}
+            {!isMaster && (
+                <div className="relative w-2.5 h-2.5">
+                    <input 
+                        type="color" 
+                        value={track.color} 
+                        onChange={(e) => onUpdate(track.id, { color: e.target.value })}
+                        className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                        title="Change Track Color"
+                    />
+                    <div className="w-full h-full rounded-full pointer-events-none" style={{ backgroundColor: track.color }} />
+                </div>
+            )}
             {isMaster && <Activity size={12} className="text-[#d4d4d4]" />}
             <input
                 type="text"
@@ -133,6 +147,16 @@ export const TrackControl: React.FC<TrackControlProps> = ({
                 title={track.name}
                 readOnly={isMaster}
             />
+            {hasClipped && (
+                <button 
+                    onClick={(e) => { e.stopPropagation(); setHasClipped(false); }}
+                    className="flex items-center gap-1 px-1.5 py-0.5 bg-[#ef4444] text-black rounded-none animate-pulse"
+                    title="Track is clipping! Click to clear warning."
+                >
+                    <AlertTriangle size={10} fill="currentColor" />
+                    <span className="text-[8px] font-black uppercase">CLIP</span>
+                </button>
+            )}
         </div>
         {!isMaster && (
             <button 
@@ -293,7 +317,7 @@ export const TrackControl: React.FC<TrackControlProps> = ({
                                );
                                if (p.type === 'DELAY') return <option key={p.id} value={`${p.id}:time`}>Delay Time</option>;
                                if (p.type === 'DISTORTION') return <option key={p.id} value={`${p.id}:drive`}>Distortion</option>;
-                               if (p.type === 'HIGHPASS' || p.type === 'LOWPASS') return <option key={p.id} value={`${p.id}:frequency`}>{p.type} Freq</option>;
+                               if (p.type === 'FILTER') return <option key={p.id} value={`${p.id}:frequency`}>Filter Freq</option>;
                                return null;
                            })}
                        </select>

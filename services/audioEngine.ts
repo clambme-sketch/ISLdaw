@@ -412,19 +412,40 @@ class AudioEngine {
             _dry: distDry.gain
         };
         
-      case 'HIGHPASS':
-        const hp = context.createBiquadFilter();
-        hp.type = 'highpass';
-        hp.frequency.value = plugin.params.frequency || 1000;
-        (hp as any)._frequency = hp.frequency;
-        return hp;
+      case 'FILTER':
+        const filter = context.createBiquadFilter();
+        filter.type = (plugin.params.filterType as BiquadFilterType) || 'lowpass';
+        filter.frequency.value = Number(plugin.params.frequency) || 1000;
+        filter.Q.value = Number(plugin.params.Q) || 1;
+        (filter as any)._frequency = filter.frequency;
+        (filter as any)._Q = filter.Q;
+        (filter as any)._type = filter.type;
+        return filter;
         
-      case 'LOWPASS':
-        const lp = context.createBiquadFilter();
-        lp.type = 'lowpass';
-        lp.frequency.value = plugin.params.frequency || 1000;
-        (lp as any)._frequency = lp.frequency;
-        return lp;
+      case 'TAPE_SATURATION':
+        const tapeInput = context.createGain();
+        const tapeOutput = context.createGain();
+        const tapeShaper = context.createWaveShaper();
+        const tapeFilter = context.createBiquadFilter();
+        
+        // Tape saturation curve
+        const drive = Number(plugin.params.drive) || 5;
+        tapeShaper.curve = this.makeDistortionCurve(drive);
+        tapeShaper.oversample = '4x';
+        
+        // Tape roll-off
+        tapeFilter.type = 'lowpass';
+        tapeFilter.frequency.value = 15000; // Tape high frequency roll-off
+        
+        tapeInput.connect(tapeShaper);
+        tapeShaper.connect(tapeFilter);
+        tapeFilter.connect(tapeOutput);
+        
+        return {
+            input: tapeInput,
+            output: tapeOutput,
+            _drive: tapeShaper.curve // Note: updating curve requires regenerating it
+        };
         
       case 'REVERB':
          const inputNode = context.createGain();
@@ -433,14 +454,14 @@ class AudioEngine {
          const wetGain = context.createGain();
          const convolver = context.createConvolver();
          
-         const mix = plugin.params.mix ?? 0.5;
-         const type = plugin.params.type ?? 0;
-         const decay = plugin.params.decay || 2.0;
+         const mix = Number(plugin.params.mix ?? 0.5);
+         const reverbType = Number(plugin.params.reverbType ?? 0);
+         const decay = Number(plugin.params.decay || 2.0);
 
          dryGain.gain.value = 1 - mix;
          wetGain.gain.value = mix;
 
-         convolver.buffer = this.getReverbBuffer(context, type, decay);
+         convolver.buffer = this.getReverbBuffer(context, reverbType, decay);
          
          inputNode.connect(dryGain);
          dryGain.connect(outputNode);
@@ -580,9 +601,10 @@ class AudioEngine {
         const filters: BiquadFilterNode[] = [];
         for(let i=0; i<8; i++) {
             const f = context.createBiquadFilter();
-            f.type = 'peaking';
-            f.frequency.value = 100 * Math.pow(2, i);
-            f.gain.value = 0;
+            f.type = (plugin.params[`band${i}_type`] as BiquadFilterType) || 'peaking';
+            f.frequency.value = Number(plugin.params[`band${i}_freq`]) || (100 * Math.pow(2, i));
+            f.gain.value = Number(plugin.params[`band${i}_gain`]) || 0;
+            f.Q.value = Number(plugin.params[`band${i}_q`]) || 1;
             prev.connect(f);
             prev = f;
             filters.push(f);
@@ -593,15 +615,32 @@ class AudioEngine {
       case 'BITCRUSHER':
         const bcInput = context.createGain();
         const bcOutput = context.createGain();
+        const bcDry = context.createGain();
+        const bcWet = context.createGain();
         const bcShaper = context.createWaveShaper();
-        // Simple bitcrush simulation using waveshaper
-        const bcCurve = new Float32Array(256);
-        for (let i = 0; i < 256; i++) {
-            bcCurve[i] = Math.floor((i - 128) / 16) * 16 / 128;
+        
+        const bits = Number(plugin.params.bits) || 8;
+        const bcMix = Number(plugin.params.mix ?? 1.0);
+        
+        // Bitcrush simulation using waveshaper
+        const steps = Math.pow(2, bits);
+        const bcCurve = new Float32Array(4096);
+        for (let i = 0; i < 4096; i++) {
+            const x = (i / 4096) * 2 - 1;
+            bcCurve[i] = Math.round(x * (steps / 2)) / (steps / 2);
         }
         bcShaper.curve = bcCurve;
+        
+        bcDry.gain.value = 1 - bcMix;
+        bcWet.gain.value = bcMix;
+        
+        bcInput.connect(bcDry);
+        bcDry.connect(bcOutput);
+        
         bcInput.connect(bcShaper);
-        bcShaper.connect(bcOutput);
+        bcShaper.connect(bcWet);
+        bcWet.connect(bcOutput);
+        
         return { input: bcInput, output: bcOutput };
 
       default:
@@ -714,9 +753,11 @@ class AudioEngine {
       // Type 0: Hall (long, dark)
       // Type 1: Room (short, bright)
       // Type 2: Plate (dense, medium bright)
+      // Type 3: Spring (boingy, metallic)
       
       let lpFreq = 5000;
       let decayFactor = 1.5;
+      let isSpring = false;
       
       if (type === 0) { // Hall
           lpFreq = 3000;
@@ -724,9 +765,13 @@ class AudioEngine {
       } else if (type === 1) { // Room
           lpFreq = 8000;
           decayFactor = decayTime * 4;
-      } else { // Plate
+      } else if (type === 2) { // Plate
           lpFreq = 6000;
           decayFactor = decayTime * 2;
+      } else if (type === 3) { // Spring
+          lpFreq = 4000;
+          decayFactor = decayTime * 3;
+          isSpring = true;
       }
 
       // Simple one-pole lowpass filter coefficient
@@ -744,6 +789,13 @@ class AudioEngine {
           let noiseL = (Math.random() * 2 - 1);
           let noiseR = (Math.random() * 2 - 1);
 
+          // Spring effect: add some periodic "boing"
+          if (isSpring) {
+              const boing = Math.sin(i * 0.05) * Math.exp(-i * 0.001);
+              noiseL += boing * 0.5;
+              noiseR += boing * 0.5;
+          }
+
           // Apply lowpass filter
           lastL = lastL + alpha * (noiseL - lastL);
           lastR = lastR + alpha * (noiseR - lastR);
@@ -751,6 +803,7 @@ class AudioEngine {
           left[i] = lastL * decay;
           right[i] = lastR * decay;
       }
+
       return impulse;
   }
   
@@ -1241,12 +1294,12 @@ class AudioEngine {
           onProgress(`Extracting ${inst}...`);
           
           let buffer: AudioBuffer;
-          let type: PluginType = 'LOWPASS'; 
+          let type: PluginType = 'FILTER'; 
           const plugins: AudioPlugin[] = [];
 
           if (lowerName.includes('bass')) {
              buffer = await this.renderFiltered(originalBuffer, 'LOW');
-             type = 'LOWPASS';
+             type = 'FILTER';
           } else if (lowerName.includes('drum') || lowerName.includes('percussion')) {
              buffer = await this.renderFiltered(originalBuffer, 'DRUMS');
              type = 'DISTORTION'; // Just using as a placeholder for track type or similar
@@ -1261,7 +1314,7 @@ class AudioEngine {
              });
           } else {
              buffer = await this.renderFiltered(originalBuffer, 'HIGH');
-             type = 'HIGHPASS';
+             type = 'FILTER';
           }
 
           results.push({

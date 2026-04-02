@@ -3,11 +3,65 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Play, Square, FastForward, Rewind, Activity, Scissors, MousePointer2, ZoomIn, ZoomOut, Grid, Undo, Redo, Download, Circle, Repeat, Timer, Settings, Check, Clock, Music4, Lock } from 'lucide-react';
 import { LoopRegion, ToolType } from '../types';
 
+const TimeDisplay: React.FC<{ initialTime: number, bpm: number, timeDisplayFormat: 'TIME' | 'BARS', handleTimerContextMenu: (e: React.MouseEvent) => void, followPlayhead: boolean }> = ({ initialTime, bpm, timeDisplayFormat, handleTimerContextMenu, followPlayhead }) => {
+    const [localTime, setLocalTime] = useState(initialTime);
+
+    useEffect(() => {
+        setLocalTime(initialTime);
+    }, [initialTime]);
+
+    useEffect(() => {
+        const handleTimeUpdate = (e: Event) => {
+            const customEvent = e as CustomEvent<number>;
+            setLocalTime(customEvent.detail);
+        };
+        window.addEventListener('playhead-update', handleTimeUpdate);
+        return () => window.removeEventListener('playhead-update', handleTimeUpdate);
+    }, []);
+
+    const formatTime = (time: number) => {
+        const mins = Math.floor(time / 60);
+        const secs = Math.floor(time % 60);
+        const ms = Math.floor((time % 1) * 1000);
+        return `${mins}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
+    };
+
+    const formatBars = (time: number, bpm: number) => {
+        const beatsPerSecond = bpm / 60;
+        const totalBeats = time * beatsPerSecond;
+        const bar = Math.floor(totalBeats / 4) + 1;
+        const beat = Math.floor(totalBeats % 4) + 1;
+        return `${bar} : ${beat}`;
+    };
+
+    return (
+        <div 
+            onContextMenu={handleTimerContextMenu}
+            className="bg-[#0a0a0a] px-4 py-1.5 rounded-lg text-[#ff7b00] text-xl min-w-[110px] text-center border-2 border-[#333] shadow-inner flex-shrink-0 cursor-context-menu hover:border-[#555] transition-colors relative flex items-center justify-center font-mono" 
+            style={{ 
+                fontVariantNumeric: 'tabular-nums',
+                letterSpacing: '0.05em',
+                fontWeight: 600,
+                textShadow: '0 0 5px #ff7b0066'
+            }}
+            title="Current Position (Right-click for options)"
+        >
+            {timeDisplayFormat === 'TIME' ? formatTime(localTime) : formatBars(localTime, bpm)}
+            
+            {followPlayhead && (
+                <div className="absolute top-1 right-1">
+                    <Lock size={10} className="text-yellow-500/50" />
+                </div>
+            )}
+        </div>
+    );
+};
+
 interface TransportProps {
   isPlaying: boolean;
   onPlay: () => void;
   onStop: () => void;
-  onRewind: () => void;
+  onRewind: (toBeginning?: boolean) => void;
   onFastForward: () => void;
   
   isRecording: boolean;
@@ -45,24 +99,6 @@ interface TransportProps {
   timeDisplayFormat: 'TIME' | 'BARS';
   setTimeDisplayFormat: (fmt: 'TIME' | 'BARS') => void;
 }
-
-const formatTime = (seconds: number) => {
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  const tenths = Math.floor((seconds % 1) * 10);
-  return `${m}:${s.toString().padStart(2, '0')}.${tenths}`;
-};
-
-const formatBars = (seconds: number, bpm: number) => {
-    const beatsPerSecond = bpm / 60;
-    const totalBeats = seconds * beatsPerSecond;
-    
-    // Assuming 4/4 signature for simplicity
-    const bar = Math.floor(totalBeats / 4) + 1;
-    const beat = Math.floor(totalBeats % 4) + 1;
-    
-    return `${bar} : ${beat}`;
-};
 
 export const Transport: React.FC<TransportProps> = ({ 
     isPlaying, 
@@ -206,7 +242,14 @@ export const Transport: React.FC<TransportProps> = ({
                 </button>
                 <div className="w-px h-4 bg-[#333] mx-0"></div>
                 <button 
-                    onClick={onRewind}
+                    onClick={() => onRewind(true)}
+                    className="p-1.5 text-[#999] hover:text-[#d4d4d4] hover:bg-[#333] transition-none"
+                    title="Go to Beginning"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="19 20 9 12 19 4 19 20"></polygon><line x1="5" y1="19" x2="5" y2="5"></line></svg>
+                </button>
+                <button 
+                    onClick={() => onRewind(false)}
                     className="p-1.5 text-[#999] hover:text-[#d4d4d4] hover:bg-[#333] transition-none"
                     title="Rewind 5s"
                 >
@@ -236,26 +279,13 @@ export const Transport: React.FC<TransportProps> = ({
             </div>
 
             {/* Time Display */}
-            <div 
-                onContextMenu={handleTimerContextMenu}
-                className="bg-[#0a0a0a] px-4 py-1.5 rounded-lg text-[#ff7b00] text-xl min-w-[110px] text-center border-2 border-[#333] shadow-inner flex-shrink-0 cursor-context-menu hover:border-[#555] transition-colors relative flex items-center justify-center font-mono" 
-                style={{ 
-                    fontVariantNumeric: 'tabular-nums',
-                    letterSpacing: '0.05em',
-                    fontWeight: 600,
-                    textShadow: '0 0 5px #ff7b0066'
-                }}
-                title="Current Position (Right-click for options)"
-            >
-                {timeDisplayFormat === 'TIME' ? formatTime(currentTime) : formatBars(currentTime, bpm)}
-                
-                {/* Tiny indicator for Follow mode */}
-                {followPlayhead && (
-                    <div className="absolute top-1 right-1">
-                        <Lock size={10} className="text-yellow-500/50" />
-                    </div>
-                )}
-            </div>
+            <TimeDisplay 
+                initialTime={currentTime} 
+                bpm={bpm} 
+                timeDisplayFormat={timeDisplayFormat} 
+                handleTimerContextMenu={handleTimerContextMenu} 
+                followPlayhead={followPlayhead} 
+            />
           </div>
 
           <div className="flex items-center gap-4">

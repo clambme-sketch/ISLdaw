@@ -111,6 +111,19 @@ export const Timeline: React.FC<TimelineProps> = ({
   onClipDoubleClick,
   onAutoAlign
 }) => {
+  const playheadRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+      const handleTimeUpdate = (e: Event) => {
+          const customEvent = e as CustomEvent<number>;
+          if (playheadRef.current) {
+              playheadRef.current.style.left = `${customEvent.detail * zoom}px`;
+          }
+      };
+      window.addEventListener('playhead-update', handleTimeUpdate);
+      return () => window.removeEventListener('playhead-update', handleTimeUpdate);
+  }, [zoom]);
+
   const [draggedClipId, setDraggedClipId] = useState<string | null>(null);
   
   // Resize State
@@ -339,12 +352,30 @@ export const Timeline: React.FC<TimelineProps> = ({
                  // Adjusting right edge: changes duration
                  newDuration = Math.max(0.05, resizeStartValues.duration + diffSeconds);
                  if (snap) newDuration = snapToGrid(resizeStartValues.startTime + newDuration) - resizeStartValues.startTime;
+                 
+                 // Clamp to next clip's start
+                 const nextClips = clips.filter(c => c.trackId === clip.trackId && c.id !== clip.id && c.startTime >= resizeStartValues.startTime + resizeStartValues.duration - 0.001);
+                 if (nextClips.length > 0) {
+                     const nextClipStart = Math.min(...nextClips.map(c => c.startTime));
+                     if (newStartTime + newDuration > nextClipStart) {
+                         newDuration = nextClipStart - newStartTime;
+                     }
+                 }
              } else {
                  // Adjusting left edge: changes start time, duration, AND offset
                  let desiredDelta = diffSeconds;
                  if (snap) {
                       const snappedNewStart = snapToGrid(resizeStartValues.startTime + diffSeconds);
                       desiredDelta = snappedNewStart - resizeStartValues.startTime;
+                 }
+                 
+                 // Clamp to previous clip's end
+                 const prevClips = clips.filter(c => c.trackId === clip.trackId && c.id !== clip.id && c.startTime + c.duration <= resizeStartValues.startTime + 0.001);
+                 if (prevClips.length > 0) {
+                     const prevClipEnd = Math.max(...prevClips.map(c => c.startTime + c.duration));
+                     if (resizeStartValues.startTime + desiredDelta < prevClipEnd) {
+                         desiredDelta = prevClipEnd - resizeStartValues.startTime;
+                     }
                  }
                  
                  // Constrain: Don't let duration go below 0.05
@@ -563,7 +594,32 @@ export const Timeline: React.FC<TimelineProps> = ({
             };
         }).filter(Boolean) as { id: string, startTime: number, trackId?: string }[];
 
-        onClipsUpdate(updates);
+        let hasOverlap = false;
+        for (const update of updates) {
+            const clip = clips.find(c => c.id === update.id);
+            if (!clip) continue;
+            
+            const targetTrackId = update.trackId || clip.trackId;
+            const newStartTime = update.startTime;
+            const newEndTime = newStartTime + clip.duration;
+            
+            const otherClips = clips.filter(c => c.trackId === targetTrackId && !movingIds.includes(c.id));
+            
+            for (const other of otherClips) {
+                const otherStart = other.startTime;
+                const otherEnd = other.startTime + other.duration;
+                
+                if (newStartTime < otherEnd - 0.001 && newEndTime > otherStart + 0.001) {
+                    hasOverlap = true;
+                    break;
+                }
+            }
+            if (hasOverlap) break;
+        }
+
+        if (!hasOverlap) {
+            onClipsUpdate(updates);
+        }
         setDraggedClipId(null);
         setDragOffsets({});
     }
@@ -853,6 +909,7 @@ export const Timeline: React.FC<TimelineProps> = ({
         )}
 
         <div 
+            ref={playheadRef}
             className="absolute top-0 bottom-0 w-px bg-[#ff7b00] z-30 pointer-events-none"
             style={{ left: `${currentTime * zoom}px`, height: '100%' }}
         >

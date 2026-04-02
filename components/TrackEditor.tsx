@@ -1,8 +1,21 @@
 
 import React, { useState } from 'react';
 import { Track, AudioPlugin, PluginType } from '../types';
-import { X, Plus, Power, Trash2, Sliders, Waves, Box, Disc } from 'lucide-react';
+import { X, Plus, Power, Trash2, Sliders, Waves, Box, Disc, Activity, Zap, Volume2, ArrowDownToLine, ArrowUpFromLine, Scissors, Layers } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
+
+const PLUGIN_STYLES: Record<PluginType, { color: string, icon: any }> = {
+    DELAY: { color: '#0ea5e9', icon: Waves }, // sky-500
+    REVERB: { color: '#d946ef', icon: Box }, // fuchsia-500
+    DISTORTION: { color: '#ef4444', icon: Zap }, // red-500
+    FILTER: { color: '#22c55e', icon: ArrowUpFromLine }, // green-500
+    LIMITER: { color: '#eab308', icon: Volume2 }, // yellow-500
+    COMPRESSOR: { color: '#f59e0b', icon: Activity }, // amber-500
+    SIDECHAIN: { color: '#6366f1', icon: Layers }, // indigo-500
+    EQ8: { color: '#10b981', icon: Sliders }, // emerald-500
+    BITCRUSHER: { color: '#ec4899', icon: Scissors }, // pink-500
+    TAPE_SATURATION: { color: '#f43f5e', icon: Disc }, // rose-500
+};
 
 interface TrackEditorProps {
   track: Track;
@@ -25,12 +38,11 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({ track, tracks, onUpdat
     // Set default params
     if (type === 'DISTORTION') { newPlugin.params.drive = 50; newPlugin.params.tone = 3000; newPlugin.params.mix = 1.0; }
     if (type === 'DELAY') { newPlugin.params.time = 0.3; newPlugin.params.feedback = 0.4; newPlugin.params.mix = 0.5; }
-    if (type === 'HIGHPASS') newPlugin.params.frequency = 200;
-    if (type === 'LOWPASS') newPlugin.params.frequency = 2000;
+    if (type === 'FILTER') { newPlugin.params.frequency = 2000; newPlugin.params.q = 1; newPlugin.params.filterType = 'lowpass'; }
     if (type === 'REVERB') {
         newPlugin.params.decay = 2.0;
         newPlugin.params.mix = 0.5;
-        newPlugin.params.type = 0; // Hall
+        newPlugin.params.type = 2; // Plate
     }
     if (type === 'LIMITER') {
         newPlugin.params.threshold = -0.1;
@@ -50,12 +62,28 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({ track, tracks, onUpdat
         newPlugin.params.release = 0.25;
         newPlugin.params.sourceTrackId = '';
     }
+    if (type === 'EQ8') {
+        for (let i = 0; i < 8; i++) {
+            newPlugin.params[`band${i}_freq`] = 100 * Math.pow(2, i);
+            newPlugin.params[`band${i}_gain`] = 0;
+            newPlugin.params[`band${i}_q`] = 1;
+            newPlugin.params[`band${i}_type`] = i === 0 ? 'lowshelf' : (i === 7 ? 'highshelf' : 'peaking');
+            newPlugin.params[`band${i}_enabled`] = 1;
+        }
+    }
+    if (type === 'BITCRUSHER') {
+        newPlugin.params.bits = 8;
+        newPlugin.params.normfreq = 0.1;
+    }
+    if (type === 'TAPE_SATURATION') {
+        newPlugin.params.drive = 5;
+    }
 
     onUpdate(track.id, { plugins: [...track.plugins, newPlugin] });
     setIsAdding(false);
   };
 
-  const updatePluginParam = (pluginId: string, param: string, value: number) => {
+  const updatePluginParam = (pluginId: string, param: string, value: any) => {
     const newPlugins = track.plugins.map(p => {
         if (p.id === pluginId) {
             return { ...p, params: { ...p.params, [param]: value } };
@@ -77,7 +105,7 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({ track, tracks, onUpdat
   };
 
   return (
-    <div className="h-64 bg-[#2d2d2d] border-t border-[#111] flex flex-col shadow-none z-40 transition-none">
+    <div className="h-96 bg-[#2d2d2d] border-t border-[#111] flex flex-col shadow-none z-40 transition-none">
       <div className="flex items-center justify-between px-4 py-2 border-b border-[#111] bg-[#2d2d2d]">
         <div className="flex items-center gap-2">
             <span className="text-sm font-bold text-[#d4d4d4] uppercase tracking-wider">Track Editor:</span>
@@ -92,10 +120,16 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({ track, tracks, onUpdat
       </div>
 
       <div className="flex-1 flex overflow-x-auto overflow-y-hidden bg-[#1e1e1e] p-4 gap-4 custom-scrollbar items-stretch">
-             {track.plugins.map((plugin, index) => (
+             {track.plugins.map((plugin, index) => {
+                 const style = PLUGIN_STYLES[plugin.type] || { color: '#888', icon: Sliders };
+                 const PluginIcon = style.icon;
+                 return (
                  <div key={plugin.id} className={`w-64 flex-shrink-0 rounded-none border flex flex-col ${plugin.enabled ? 'bg-[#2d2d2d] border-[#111]' : 'bg-[#1e1e1e] border-[#111] opacity-60'}`}>
-                     <div className="flex items-center justify-between p-2 border-b border-[#111] bg-[#222]">
-                         <span className="font-semibold text-xs text-[#d4d4d4]">{index + 1}. {plugin.type}</span>
+                     <div className="flex items-center justify-between p-2 border-b border-[#111] bg-[#222]" style={{ borderTop: `2px solid ${style.color}` }}>
+                         <div className="flex items-center gap-2">
+                             <PluginIcon size={14} style={{ color: style.color }} />
+                             <span className="font-semibold text-xs text-[#d4d4d4]">{index + 1}. {plugin.type}</span>
+                         </div>
                          <div className="flex items-center gap-1">
                              <button onClick={() => togglePlugin(plugin.id)} className="p-1 hover:text-white text-[#999]" title={plugin.enabled ? "Disable Effect" : "Enable Effect"}>
                                 <Power size={12} className={plugin.enabled ? "text-[#10b981]" : ""} />
@@ -111,21 +145,108 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({ track, tracks, onUpdat
                      {plugin.enabled && (
                          <div className="grid grid-cols-1 gap-3">
                              {/* Special UI for Reverb */}
-                             {plugin.type === 'REVERB' ? (
+                             {plugin.type === 'EQ8' ? (
+                                 <div className="flex flex-col gap-2">
+                                     <div className="h-24 bg-[#111] relative border border-[#333] rounded-none overflow-hidden">
+                                         {/* Simple visual representation of EQ curve */}
+                                         <svg width="100%" height="100%" viewBox="0 0 800 100" preserveAspectRatio="none">
+                                            <path 
+                                                d={`M 0,50 ${Array.from({length: 8}).map((_, i) => {
+                                                    const freq = Number(plugin.params[`band${i}_freq`]);
+                                                    const gain = Number(plugin.params[`band${i}_gain`]);
+                                                    const x = Math.log10(freq / 20) / Math.log10(20000 / 20) * 800;
+                                                    const y = 50 - (gain * 2);
+                                                    return `L ${x},${y}`;
+                                                }).join(' ')} L 800,50`}
+                                                fill="none"
+                                                stroke="#ff7b00"
+                                                strokeWidth="2"
+                                            />
+                                            {Array.from({length: 8}).map((_, i) => {
+                                                const freq = Number(plugin.params[`band${i}_freq`]);
+                                                const gain = Number(plugin.params[`band${i}_gain`]);
+                                                const x = Math.log10(freq / 20) / Math.log10(20000 / 20) * 800;
+                                                const y = 50 - (gain * 2);
+                                                return (
+                                                    <circle key={i} cx={x} cy={y} r="4" fill="#ff7b00" />
+                                                );
+                                            })}
+                                         </svg>
+                                     </div>
+                                     <div className="grid grid-cols-4 gap-1">
+                                         {Array.from({length: 8}).map((_, i) => (
+                                             <div key={i} className="flex flex-col gap-1 bg-[#111] p-1">
+                                                 <div className="text-[8px] text-center text-[#999]">B{i+1}</div>
+                                                 <input 
+                                                     type="range" min="-24" max="24" step="0.1"
+                                                     value={Number(plugin.params[`band${i}_gain`])}
+                                                     onChange={(e) => updatePluginParam(plugin.id, `band${i}_gain`, Number(e.target.value))}
+                                                     className="h-16 appearance-none bg-transparent [&::-webkit-slider-runnable-track]:bg-[#333] [&::-webkit-slider-runnable-track]:w-1 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-2 [&::-webkit-slider-thumb]:bg-[#ff7b00] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:-ml-1"
+                                                     style={{ writingMode: 'vertical-lr', direction: 'rtl' }}
+                                                 />
+                                             </div>
+                                         ))}
+                                     </div>
+                                 </div>
+                             ) : plugin.type === 'FILTER' ? (
+                                 <div className="flex flex-col gap-2">
+                                     <div className="flex gap-1 justify-between bg-[#111] p-1 rounded-none">
+                                         {[
+                                             {id: 'lowpass', label: 'LP'},
+                                             {id: 'highpass', label: 'HP'},
+                                             {id: 'bandpass', label: 'BP'},
+                                             {id: 'notch', label: 'NO'}
+                                         ].map(t => (
+                                             <button 
+                                                 key={t.id}
+                                                 onClick={() => updatePluginParam(plugin.id, 'filterType', t.id)}
+                                                 className={`flex-1 p-1 rounded-none text-[10px] font-bold uppercase tracking-wider ${plugin.params.filterType === t.id ? 'bg-[#ff7b00] text-black' : 'hover:bg-[#444] text-[#999]'}`}
+                                             >
+                                                 {t.label}
+                                             </button>
+                                         ))}
+                                     </div>
+                                     <div className="flex flex-col gap-1">
+                                         <div className="flex justify-between text-[10px] text-[#999] uppercase">
+                                             <span>Freq</span>
+                                             <span>{Number(plugin.params.frequency).toFixed(0)} Hz</span>
+                                         </div>
+                                         <input 
+                                            type="range" min="20" max="20000" step="10"
+                                            value={Number(plugin.params.frequency)}
+                                            onChange={(e) => updatePluginParam(plugin.id, 'frequency', Number(e.target.value))}
+                                            className="h-1.5 bg-[#111] rounded-none appearance-none accent-[#ff7b00]"
+                                         />
+                                     </div>
+                                     <div className="flex flex-col gap-1">
+                                         <div className="flex justify-between text-[10px] text-[#999] uppercase">
+                                             <span>Resonance (Q)</span>
+                                             <span>{Number(plugin.params.Q).toFixed(2)}</span>
+                                         </div>
+                                         <input 
+                                            type="range" min="0.1" max="20" step="0.1"
+                                            value={Number(plugin.params.Q)}
+                                            onChange={(e) => updatePluginParam(plugin.id, 'Q', Number(e.target.value))}
+                                            className="h-1.5 bg-[#111] rounded-none appearance-none accent-[#ff7b00]"
+                                         />
+                                     </div>
+                                 </div>
+                             ) : plugin.type === 'REVERB' ? (
                                 <>
                                     <div className="flex gap-1 justify-between bg-[#111] p-1 rounded-none">
                                         {[
-                                            {id: 0, icon: Waves, label: 'Hall'},
-                                            {id: 1, icon: Box, label: 'Room'},
-                                            {id: 2, icon: Disc, label: 'Plate'}
+                                            {id: 0, label: 'Hall'},
+                                            {id: 1, label: 'Room'},
+                                            {id: 2, label: 'Plate'},
+                                            {id: 3, label: 'Spring'}
                                         ].map(t => (
                                             <button 
                                                 key={t.id}
-                                                onClick={() => updatePluginParam(plugin.id, 'type', t.id)}
-                                                className={`flex-1 p-1 rounded-none flex flex-col items-center justify-center gap-1 ${plugin.params.type === t.id ? 'bg-[#ff7b00] text-black' : 'hover:bg-[#444] text-[#999]'}`}
+                                                onClick={() => updatePluginParam(plugin.id, 'reverbType', t.id)}
+                                                className={`flex-1 p-1 rounded-none text-[10px] font-bold uppercase tracking-wider ${plugin.params.reverbType === t.id ? 'bg-[#ff7b00] text-black' : 'hover:bg-[#444] text-[#999]'}`}
                                                 title={`Reverb Type: ${t.label}`}
                                             >
-                                                <t.icon size={12} />
+                                                {t.label}
                                             </button>
                                         ))}
                                     </div>
@@ -245,7 +366,8 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({ track, tracks, onUpdat
                      )}
                      </div>
                  </div>
-             ))}
+                 );
+             })}
 
              <div className="w-64 flex-shrink-0 relative">
                  <button 
@@ -259,7 +381,7 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({ track, tracks, onUpdat
                  
                  {isAdding && (
                      <div className="absolute top-0 left-full ml-2 w-48 bg-[#2d2d2d] border border-[#111] rounded-none shadow-none z-50 overflow-y-auto max-h-64">
-                         {['DELAY', 'REVERB', 'DISTORTION', 'HIGHPASS', 'LOWPASS', 'LIMITER', 'SIDECHAIN', 'EQ8', 'COMPRESSOR', 'BITCRUSHER'].map(type => (
+                         {['DELAY', 'REVERB', 'DISTORTION', 'FILTER', 'LIMITER', 'SIDECHAIN', 'EQ8', 'COMPRESSOR', 'BITCRUSHER', 'TAPE_SATURATION'].map(type => (
                              <button
                                 key={type}
                                 onClick={() => addPlugin(type as PluginType)}

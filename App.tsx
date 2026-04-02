@@ -17,8 +17,8 @@ import { Plus } from 'lucide-react';
 const INITIAL_TRACKS: Track[] = [
   { id: 'track-1', name: 'Drums', color: TRACK_COLORS[0], volume: 1.0, muted: false, soloed: false, plugins: [], automation: { volume: [] }, showAutomation: false, selectedAutomationId: 'volume' },
   { id: 'track-2', name: 'Bass', color: TRACK_COLORS[1], volume: 1.0, muted: false, soloed: false, plugins: [], automation: { volume: [] }, showAutomation: false, selectedAutomationId: 'volume' },
-  { id: 'track-3', name: 'Melody', color: TRACK_COLORS[4], volume: 1.0, muted: false, soloed: false, plugins: [], automation: { volume: [] }, showAutomation: false, selectedAutomationId: 'volume' },
-  { id: 'track-4', name: 'Vocals', color: TRACK_COLORS[5], volume: 1.0, muted: false, soloed: false, plugins: [], automation: { volume: [] }, showAutomation: false, selectedAutomationId: 'volume' },
+  { id: 'track-3', name: 'Melody', color: TRACK_COLORS[2], volume: 1.0, muted: false, soloed: false, plugins: [], automation: { volume: [] }, showAutomation: false, selectedAutomationId: 'volume' },
+  { id: 'track-4', name: 'Vocals', color: TRACK_COLORS[3], volume: 1.0, muted: false, soloed: false, plugins: [], automation: { volume: [] }, showAutomation: false, selectedAutomationId: 'volume' },
 ];
 
 const MASTER_TRACK: Track = {
@@ -117,6 +117,7 @@ function App() {
     currentTime: 0
   });
 
+  const currentTimeRef = useRef<number>(0);
   const rafRef = useRef<number | null>(null);
   const startTimeRef = useRef<number>(0); 
   const pauseTimeRef = useRef<number>(0); 
@@ -160,14 +161,14 @@ function App() {
           requestAnimationFrame(() => {
               if (scrollContainerRef.current) {
                   const containerWidth = scrollContainerRef.current.clientWidth;
-                  const playheadX = playbackState.currentTime * clampedZoom;
+                  const playheadX = currentTimeRef.current * clampedZoom;
                   // Center playhead: target scroll is playheadX - halfWidth
                   const targetScroll = Math.max(0, playheadX - (containerWidth / 2));
                   scrollContainerRef.current.scrollLeft = targetScroll;
               }
           });
       }
-  }, [playbackState.currentTime]);
+  }, []);
   
   // --- Undo/Redo System ---
   const pushHistory = useCallback((newTracks: Track[], newClips: AudioClip[]) => {
@@ -260,7 +261,10 @@ function App() {
           }
       }
       
-      setPlaybackState(prev => ({ ...prev, currentTime: newTime }));
+      // Dispatch custom event for UI updates without React re-renders
+      currentTimeRef.current = newTime;
+      window.dispatchEvent(new CustomEvent('playhead-update', { detail: newTime }));
+      
       rafRef.current = requestAnimationFrame(animate);
     };
     
@@ -269,7 +273,9 @@ function App() {
 
   const handleSeek = useCallback((time: number) => {
       pauseTimeRef.current = time;
+      currentTimeRef.current = time;
       setPlaybackState(prev => ({ ...prev, currentTime: time }));
+      window.dispatchEvent(new CustomEvent('playhead-update', { detail: time }));
       
       // If playing, we need to restart playback at new position
       if (playbackState.isPlaying) {
@@ -291,18 +297,18 @@ function App() {
     }
     
     setPlaybackState(prev => {
-        pauseTimeRef.current = prev.currentTime; 
-        return { ...prev, isPlaying: false };
+        pauseTimeRef.current = currentTimeRef.current; 
+        return { ...prev, isPlaying: false, currentTime: currentTimeRef.current };
     });
   }, [isRecording]);
 
-  const handleRewind = () => {
-      const newTime = Math.max(0, playbackState.currentTime - 5);
+  const handleRewind = (toBeginning?: boolean) => {
+      const newTime = toBeginning ? 0 : Math.max(0, currentTimeRef.current - 5);
       handleSeek(newTime);
   };
 
   const handleFastForward = () => {
-      const newTime = playbackState.currentTime + 5;
+      const newTime = currentTimeRef.current + 5;
       handleSeek(newTime);
   };
 
@@ -410,7 +416,7 @@ function App() {
                   gain: 1,
                   pan: 0,
                   playbackRate: 1,
-                  loop: false
+                  loop: true
               };
               
               if (finalDuration > 0) {
@@ -425,10 +431,11 @@ function App() {
 
   // --- Track Management ---
   const addTrack = () => {
+    const nonMasterTracksCount = tracks.filter(t => !t.isMaster).length;
     const newTrack: Track = {
       id: `track-${Date.now()}`,
-      name: `Track ${tracks.length}`, 
-      color: TRACK_COLORS[(tracks.length - 1) % TRACK_COLORS.length],
+      name: `Track ${nonMasterTracksCount + 1}`, 
+      color: TRACK_COLORS[nonMasterTracksCount % TRACK_COLORS.length],
       volume: 1.0,
       muted: false,
       soloed: false,
@@ -479,7 +486,7 @@ function App() {
           return t;
       });
       updateStateWithHistory(newTracks, clips);
-      if (playbackState.isPlaying) startPlayback(playbackState.currentTime);
+      if (playbackState.isPlaying) startPlayback(currentTimeRef.current);
   };
 
   const deleteTrack = (id: string) => {
@@ -494,20 +501,43 @@ function App() {
   // --- Clip Management ---
   const handleFileDrop = async (file: File, trackId: string, time: number) => {
     if (trackId === 'master') return;
+    
+    // Check if drop time is inside an existing clip
+    const overlappingClip = clips.find(c => c.trackId === trackId && time >= c.startTime && time < c.startTime + c.duration);
+    if (overlappingClip) {
+        alert("Cannot drop file on top of an existing clip.");
+        return;
+    }
+    
     try {
       const buffer = await audioService.loadFile(file);
+      
+      let duration = buffer.duration;
+      const nextClips = clips.filter(c => c.trackId === trackId && c.startTime >= time - 0.001);
+      if (nextClips.length > 0) {
+          const nextClipStart = Math.min(...nextClips.map(c => c.startTime));
+          if (time + duration > nextClipStart) {
+              duration = nextClipStart - time;
+          }
+      }
+      
+      if (duration < 0.05) {
+          alert("Not enough space to drop the file here.");
+          return;
+      }
+      
       const newClip: AudioClip = {
         id: uuidv4(),
         trackId,
         buffer,
         name: file.name,
         startTime: time,
-        duration: buffer.duration,
+        duration: duration,
         offset: 0,
         gain: 1,
         pan: 0,
         playbackRate: 1,
-        loop: false
+        loop: true
       };
       updateStateWithHistory(tracks, [...clips, newClip]);
     } catch (e) {
@@ -544,7 +574,7 @@ function App() {
           return c;
       });
       setClips(newClips);
-      if (playbackState.isPlaying) startPlayback(playbackState.currentTime); 
+      if (playbackState.isPlaying) startPlayback(currentTimeRef.current); 
   };
   
   // Refactored to handle Left/Right resizing
@@ -661,14 +691,34 @@ function App() {
 
       clipsToDuplicate.forEach(original => {
           const newId = uuidv4();
-          newIds.push(newId);
-          newClips.push({
-              ...original,
-              id: newId,
-              // Per user request: Place immediately after original
-              startTime: original.startTime + original.duration, 
-              name: `${original.name} (Copy)`
-          });
+          
+          let newStartTime = original.startTime + original.duration;
+          let newDuration = original.duration;
+          
+          // Check if it overlaps with an existing clip
+          const overlappingClip = clips.find(c => c.trackId === original.trackId && newStartTime >= c.startTime && newStartTime < c.startTime + c.duration);
+          if (overlappingClip) {
+              return; // Skip duplicating if it overlaps
+          }
+          
+          const nextClips = clips.filter(c => c.trackId === original.trackId && c.id !== original.id && c.startTime >= newStartTime - 0.001);
+          if (nextClips.length > 0) {
+              const nextClipStart = Math.min(...nextClips.map(c => c.startTime));
+              if (newStartTime + newDuration > nextClipStart) {
+                  newDuration = nextClipStart - newStartTime;
+              }
+          }
+          
+          if (newDuration >= 0.05) {
+              newIds.push(newId);
+              newClips.push({
+                  ...original,
+                  id: newId,
+                  startTime: newStartTime,
+                  duration: newDuration,
+                  name: `${original.name} (Copy)`
+              });
+          }
       });
 
       updateStateWithHistory(tracks, newClips);
@@ -688,7 +738,7 @@ function App() {
               duration: clip.duration, 
               playbackRate: 1, 
               name: `${clip.name} (Flattened)`,
-              loop: false 
+              loop: true 
           };
           
           const newClips = clips.map(c => c.id === id ? newClip : c);
@@ -769,15 +819,35 @@ function App() {
       clipboardClips.forEach(clip => {
           const relativeTime = clip.startTime - minStartTime;
           const newId = uuidv4();
-          newIds.push(newId);
           
-          newClips.push({
-              ...clip,
-              id: newId,
-              startTime: time + relativeTime,
-              trackId: targetTrackId, // Collapse to the track where user right-clicked for now
-              name: `${clip.name} (Paste)`
-          });
+          let newStartTime = time + relativeTime;
+          let newDuration = clip.duration;
+          
+          // Check if it overlaps with an existing clip
+          const overlappingClip = clips.find(c => c.trackId === targetTrackId && newStartTime >= c.startTime && newStartTime < c.startTime + c.duration);
+          if (overlappingClip) {
+              return; // Skip pasting if it overlaps
+          }
+          
+          const nextClips = clips.filter(c => c.trackId === targetTrackId && c.startTime >= newStartTime - 0.001);
+          if (nextClips.length > 0) {
+              const nextClipStart = Math.min(...nextClips.map(c => c.startTime));
+              if (newStartTime + newDuration > nextClipStart) {
+                  newDuration = nextClipStart - newStartTime;
+              }
+          }
+          
+          if (newDuration >= 0.05) {
+              newIds.push(newId);
+              newClips.push({
+                  ...clip,
+                  id: newId,
+                  startTime: newStartTime,
+                  duration: newDuration,
+                  trackId: targetTrackId, // Collapse to the track where user right-clicked for now
+                  name: `${clip.name} (Paste)`
+              });
+          }
       });
       
       updateStateWithHistory(tracks, newClips);
@@ -789,7 +859,18 @@ function App() {
       if (clip) {
           const isLooping = !clip.loop;
           const baseDuration = clip.buffer.duration / clip.playbackRate;
-          const newDuration = isLooping ? clip.duration + baseDuration : clip.duration;
+          let newDuration = isLooping ? clip.duration + baseDuration : clip.duration;
+          
+          if (isLooping) {
+              const nextClips = clips.filter(c => c.trackId === clip.trackId && c.id !== clip.id && c.startTime >= clip.startTime + clip.duration - 0.001);
+              if (nextClips.length > 0) {
+                  const nextClipStart = Math.min(...nextClips.map(c => c.startTime));
+                  if (clip.startTime + newDuration > nextClipStart) {
+                      newDuration = nextClipStart - clip.startTime;
+                  }
+              }
+          }
+          
           const newClips = clips.map(c => c.id === id ? { ...c, loop: isLooping, duration: newDuration } : c);
           updateStateWithHistory(tracks, newClips);
       }
@@ -1058,6 +1139,7 @@ function App() {
       {editingTrack ? (
           <TrackEditor 
             track={editingTrack} 
+            tracks={tracks}
             onUpdate={updateTrack} 
             onClose={() => setEditingTrackId(null)} 
           />
