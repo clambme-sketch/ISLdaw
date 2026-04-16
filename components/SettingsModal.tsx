@@ -34,7 +34,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
   }, [isOpen]);
 
   const loadDevices = async () => {
-      const devices = await audioService.getAvailableDevices();
+      const devices = await audioService.getAvailableDevices(false);
       setInputDevices(devices.inputs);
       setOutputDevices(devices.outputs);
   };

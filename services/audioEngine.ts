@@ -39,7 +39,13 @@ class AudioEngine {
   private monitorSource: MediaStreamAudioSourceNode | null = null;
   private monitorAnalyser: AnalyserNode | null = null;
   private monitorGain: GainNode | null = null;
+  private monitorSplitter: ChannelSplitterNode | null = null;
   private monitorTrackId: string | null = null;
+  
+  private recordingSource: MediaStreamAudioSourceNode | null = null;
+  private recordingSplitter: ChannelSplitterNode | null = null;
+  private recordingDest: MediaStreamAudioDestinationNode | null = null;
+  private recordingGain: GainNode | null = null;
   
   private currentInputDeviceId: string = 'default';
   public latencySeconds: number = 0.025; // Default 25ms manual offset
@@ -78,12 +84,14 @@ class AudioEngine {
 
   // --- Device Management ---
 
-  public async getAvailableDevices() {
-      // Ensure we have permissions first to get labels
-      try {
-        await navigator.mediaDevices.getUserMedia({ audio: true }).then(s => s.getTracks().forEach(t => t.stop()));
-      } catch (e) {
-          console.warn("Could not get permission for enumerating devices");
+  public async getAvailableDevices(requestPermission: boolean = false) {
+      // Ensure we have permissions first to get labels if requested
+      if (requestPermission) {
+          try {
+            await navigator.mediaDevices.getUserMedia({ audio: true }).then(s => s.getTracks().forEach(t => t.stop()));
+          } catch (e) {
+              console.warn("Could not get permission for enumerating devices");
+          }
       }
       
       const devices = await navigator.mediaDevices.enumerateDevices();
@@ -243,23 +251,30 @@ class AudioEngine {
       return null;
   }
 
-  public async enableMonitoring(trackId: string) {
+  public async enableMonitoring(trackId: string, inputChannel: number = 1) {
       if (this.monitorStream) {
           this.disableMonitoring();
       }
 
       try {
+          const deviceToUse = this.currentInputDeviceId;
           this.monitorStream = await navigator.mediaDevices.getUserMedia({ 
               audio: { 
-                  deviceId: this.currentInputDeviceId !== 'default' ? { exact: this.currentInputDeviceId } : undefined,
+                  deviceId: deviceToUse !== 'default' && deviceToUse ? { exact: deviceToUse } : undefined,
                   echoCancellation: false, 
                   autoGainControl: false, 
                   noiseSuppression: false,
-                  latency: 0 
+                  latency: 0,
+                  channelCount: { ideal: 8 } // Request multi-channel if available
               } as any
           });
           
           this.monitorSource = this.context.createMediaStreamSource(this.monitorStream);
+          this.monitorSource.channelCountMode = 'explicit';
+          this.monitorSource.channelCount = 8;
+          
+          this.monitorSplitter = this.context.createChannelSplitter(8);
+          
           this.monitorAnalyser = this.context.createAnalyser();
           this.monitorAnalyser.fftSize = 256;
           this.monitorAnalyser.smoothingTimeConstant = 0.8;
@@ -268,7 +283,12 @@ class AudioEngine {
           this.monitorGain = this.context.createGain();
           this.monitorGain.gain.value = 0;
 
-          this.monitorSource.connect(this.monitorAnalyser);
+          this.monitorSource.connect(this.monitorSplitter);
+          
+          // Map 1-based channel to 0-based index, clamp to available outputs
+          const channelIndex = Math.max(0, Math.min(inputChannel - 1, 7));
+          
+          this.monitorSplitter.connect(this.monitorAnalyser, channelIndex, 0);
           this.monitorAnalyser.connect(this.monitorGain);
           this.monitorGain.connect(this.context.destination);
           
@@ -283,6 +303,10 @@ class AudioEngine {
       if (this.monitorSource) {
           this.monitorSource.disconnect();
           this.monitorSource = null;
+      }
+      if (this.monitorSplitter) {
+          this.monitorSplitter.disconnect();
+          this.monitorSplitter = null;
       }
       if (this.monitorAnalyser) {
           this.monitorAnalyser.disconnect();
@@ -1219,22 +1243,59 @@ class AudioEngine {
 
   // --- Recording ---
 
-  public async startRecording(): Promise<void> {
+  public async startRecording(inputChannel: number = 1): Promise<void> {
     try {
         // Reuse monitor stream if available to avoid hardware conflict
         let stream = this.monitorStream;
         
         if (!stream) {
             console.log("No monitor stream found, requesting new stream");
+            const deviceToUse = this.currentInputDeviceId;
             this.recordingStream = await navigator.mediaDevices.getUserMedia({ 
                 audio: {
-                    deviceId: this.currentInputDeviceId !== 'default' ? { exact: this.currentInputDeviceId } : undefined
-                } 
+                    deviceId: deviceToUse !== 'default' && deviceToUse ? { exact: deviceToUse } : undefined,
+                    channelCount: { ideal: 8 }
+                } as any
             });
             stream = this.recordingStream;
         }
 
-        this.mediaRecorder = new MediaRecorder(stream);
+        // Use existing monitor nodes if available to avoid creating multiple MediaStreamAudioSourceNodes
+        if (this.monitorSource && this.monitorSplitter && stream === this.monitorStream) {
+            this.recordingSource = null;
+            this.recordingSplitter = null;
+            this.recordingDest = this.context.createMediaStreamDestination();
+            
+            const channelIndex = Math.max(0, Math.min(inputChannel - 1, 7));
+            
+            // Connect the specific channel to the destination
+            // We use a gain node to mix the mono channel to both L and R of the destination
+            this.recordingGain = this.context.createGain();
+            this.recordingGain.channelCount = 1;
+            this.recordingGain.channelCountMode = 'explicit';
+            
+            this.monitorSplitter.connect(this.recordingGain, channelIndex, 0);
+            this.recordingGain.connect(this.recordingDest);
+        } else {
+            this.recordingSource = this.context.createMediaStreamSource(stream);
+            this.recordingSource.channelCountMode = 'explicit';
+            this.recordingSource.channelCount = 8;
+            
+            this.recordingSplitter = this.context.createChannelSplitter(8);
+            this.recordingSource.connect(this.recordingSplitter);
+
+            this.recordingDest = this.context.createMediaStreamDestination();
+            const channelIndex = Math.max(0, Math.min(inputChannel - 1, 7));
+
+            this.recordingGain = this.context.createGain();
+            this.recordingGain.channelCount = 1;
+            this.recordingGain.channelCountMode = 'explicit';
+
+            this.recordingSplitter.connect(this.recordingGain, channelIndex, 0);
+            this.recordingGain.connect(this.recordingDest);
+        }
+
+        this.mediaRecorder = new MediaRecorder(this.recordingDest.stream);
         this.recordingChunks = [];
         this.mediaRecorder.ondataavailable = (e) => {
             if (e.data.size > 0) this.recordingChunks.push(e.data);
@@ -1261,6 +1322,25 @@ class AudioEngine {
                 this.recordingStream.getTracks().forEach(track => track.stop());
                 this.recordingStream = null;
             }
+            
+            // Cleanup recording nodes
+            if (this.recordingSource) {
+                this.recordingSource.disconnect();
+                this.recordingSource = null;
+            }
+            if (this.recordingSplitter) {
+                this.recordingSplitter.disconnect();
+                this.recordingSplitter = null;
+            }
+            if (this.recordingGain) {
+                this.recordingGain.disconnect();
+                this.recordingGain = null;
+            }
+            if (this.recordingDest) {
+                this.recordingDest.disconnect();
+                this.recordingDest = null;
+            }
+            
             this.mediaRecorder = null;
             resolve(blob);
         };

@@ -8,6 +8,8 @@ export interface Track {
   soloed: boolean;
   plugins: AudioPlugin[];
   isMaster?: boolean;
+  inputId?: string;
+  inputChannel?: number; // 1-based index for multi-channel interfaces
   // Key is the parameter ID (e.g., 'volume', 'pan', 'pluginId:paramName')
   automation: Record<string, AutomationPoint[]>; 
   showAutomation?: boolean; 

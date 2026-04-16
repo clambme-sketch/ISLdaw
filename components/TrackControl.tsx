@@ -1,7 +1,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { Track } from '../types';
-import { Volume2, VolumeX, Mic, Headphones, Activity, TrendingUp, ChevronDown, Eye, AlertTriangle } from 'lucide-react';
+import { Volume2, VolumeX, Mic, Headphones, Activity, TrendingUp, ChevronDown, Eye, AlertTriangle, Sliders } from 'lucide-react';
 import { audioService } from '../services/audioEngine';
 import { TRACK_HEIGHT, AUTOMATION_HEIGHT } from '../constants';
 
@@ -18,6 +18,7 @@ interface TrackControlProps {
   onOpenEditor: (trackId: string) => void;
   onToggleAutomation: (trackId: string) => void;
   onOpenVisualizerSettings?: () => void;
+  availableInputs?: MediaDeviceInfo[];
 }
 
 export const TrackControl: React.FC<TrackControlProps> = ({ 
@@ -29,7 +30,8 @@ export const TrackControl: React.FC<TrackControlProps> = ({
     onArmToggle,
     onOpenEditor,
     onToggleAutomation,
-    onOpenVisualizerSettings
+    onOpenVisualizerSettings,
+    availableInputs = []
 }) => {
   const isMaster = track.isMaster;
   const [hasClipped, setHasClipped] = useState(false);
@@ -158,15 +160,47 @@ export const TrackControl: React.FC<TrackControlProps> = ({
                 </button>
             )}
         </div>
-        {!isMaster && (
-            <button 
-                onClick={(e) => { e.stopPropagation(); onDelete(track.id); }}
-                className="text-[10px] text-[#999] hover:text-[#ef4444] opacity-0 group-hover:opacity-100 transition-none"
-                title="Delete Track"
-            >
-                Delete
-            </button>
-        )}
+        <div className="flex items-center gap-2">
+            {!isMaster && (
+                <select
+                    value={track.inputChannel || 1}
+                    onChange={(e) => {
+                        const newChannel = parseInt(e.target.value, 10);
+                        onUpdate(track.id, { inputChannel: newChannel });
+                        if (isArmed) {
+                            audioService.enableMonitoring(track.id, newChannel);
+                        }
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    className="bg-[#111] text-[9px] text-[#999] border border-[#222] rounded-none px-1 py-0.5 outline-none w-16 truncate"
+                    title="Select Input Channel"
+                >
+                    {[1, 2, 3, 4, 5, 6, 7, 8].map(ch => (
+                        <option key={ch} value={ch}>
+                            Input {ch}
+                        </option>
+                    ))}
+                </select>
+            )}
+            {!isMaster && (
+                <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-none">
+                    <button
+                        onClick={(e) => { e.stopPropagation(); onOpenEditor(track.id); }}
+                        className="text-[#999] hover:text-[#d4d4d4]"
+                        title="Open Track Editor"
+                    >
+                        <Sliders size={12} />
+                    </button>
+                    <button 
+                        onClick={(e) => { e.stopPropagation(); onDelete(track.id); }}
+                        className="text-[10px] text-[#999] hover:text-[#ef4444]"
+                        title="Delete Track"
+                    >
+                        Delete
+                    </button>
+                </div>
+            )}
+        </div>
       </div>
 
       <div className="flex items-center gap-1 mb-1.5">

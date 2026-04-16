@@ -96,6 +96,17 @@ function App() {
   // Recording State
   const [armedTrackId, setArmedTrackId] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
+  const [availableInputs, setAvailableInputs] = useState<MediaDeviceInfo[]>([]);
+
+  useEffect(() => {
+      const fetchDevices = async () => {
+          const devices = await audioService.getAvailableDevices(false);
+          setAvailableInputs(devices.inputs);
+      };
+      fetchDevices();
+      navigator.mediaDevices.addEventListener('devicechange', fetchDevices);
+      return () => navigator.mediaDevices.removeEventListener('devicechange', fetchDevices);
+  }, []);
   
   // Selection State (Multi-select)
   const [selectedClipIds, setSelectedClipIds] = useState<string[]>([]);
@@ -319,9 +330,14 @@ function App() {
           audioService.disableMonitoring();
       } else {
           try {
+              const track = tracks.find(t => t.id === trackId);
               // Critical: Await monitoring setup BEFORE updating state to ensure visualizer is ready
-              await audioService.enableMonitoring(trackId); 
+              await audioService.enableMonitoring(trackId, track?.inputChannel); 
               setArmedTrackId(trackId);
+              
+              // Refresh devices to get labels if we didn't have them before
+              const devices = await audioService.getAvailableDevices(false);
+              setAvailableInputs(devices.inputs);
           } catch(e) {
               alert("Could not access microphone.");
               setArmedTrackId(null);
@@ -340,8 +356,9 @@ function App() {
           try {
             await audioService.resume();
 
+            const armedTrack = tracks.find(t => t.id === armedTrackId);
             // 1. Start Recording Physically FIRST to capture pre-roll/setup
-            await audioService.startRecording();
+            await audioService.startRecording(armedTrack?.inputChannel);
             const sysRecordStart = audioService.getContext().currentTime;
 
             // 2. Count-In Logic (if enabled)
@@ -991,7 +1008,11 @@ function App() {
         toggleMetronome={() => setIsMetronomeOn(!isMetronomeOn)}
         countInMeasures={countInMeasures}
         setCountInMeasures={setCountInMeasures}
-        onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenSettings={async () => {
+          // Request permission directly in the click handler to avoid browser blocking
+          await audioService.getAvailableDevices(true);
+          setIsSettingsOpen(true);
+        }}
         
         followPlayhead={followPlayhead}
         setFollowPlayhead={setFollowPlayhead}
@@ -1029,6 +1050,7 @@ function App() {
                         onArmToggle={() => handleArmTrack(track.id)}
                         onOpenEditor={setEditingTrackId}
                         onToggleAutomation={toggleAutomation}
+                        availableInputs={availableInputs}
                     />
                  ))}
                  
@@ -1111,6 +1133,7 @@ function App() {
                   onOpenEditor={setEditingTrackId}
                   onToggleAutomation={() => {}}
                   onOpenVisualizerSettings={() => setIsVisualizerSettingsOpen(true)}
+                  availableInputs={availableInputs}
                 />
              </div>
              {/* Master Visualizer (Right) */}
