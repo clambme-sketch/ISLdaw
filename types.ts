@@ -53,14 +53,14 @@ export interface PlaybackState {
   currentTime: number; 
 }
 
-export type PluginType = 'DELAY' | 'REVERB' | 'DISTORTION' | 'FILTER' | 'LIMITER' | 'SIDECHAIN' | 'EQ8' | 'COMPRESSOR' | 'BITCRUSHER' | 'TAPE_SATURATION';
+export type PluginType = 'DELAY' | 'REVERB' | 'DISTORTION' | 'FILTER' | 'LIMITER' | 'SIDECHAIN' | 'EQ' | 'COMPRESSOR' | 'BITCRUSHER' | 'TAPE_SATURATION';
 
 export interface AudioPlugin {
   id: string;
   type: PluginType;
   enabled: boolean;
   params: {
-    [key: string]: number | string;
+    [key: string]: number | string | boolean;
   };
 }
 

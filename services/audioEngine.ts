@@ -125,13 +125,23 @@ class AudioEngine {
   }
 
   public async loadFile(file: File): Promise<AudioBuffer> {
-    const arrayBuffer = await file.arrayBuffer();
-    return await this.context.decodeAudioData(arrayBuffer);
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      return await this.context.decodeAudioData(arrayBuffer);
+    } catch (e) {
+      console.error("AudioEngine: Error decoding file", file.name, e);
+      throw new Error(`Could not decode audio from ${file.name}. Ensure it is a supported audio or video format.`);
+    }
   }
 
   public async decodeBlob(blob: Blob): Promise<AudioBuffer> {
-    const arrayBuffer = await blob.arrayBuffer();
-    return await this.context.decodeAudioData(arrayBuffer);
+    try {
+      const arrayBuffer = await blob.arrayBuffer();
+      return await this.context.decodeAudioData(arrayBuffer);
+    } catch (e) {
+      console.error("AudioEngine: Error decoding blob", e);
+      throw new Error("Could not decode recorded audio blob.");
+    }
   }
 
   // --- Metronome & Calibration ---
@@ -270,10 +280,9 @@ class AudioEngine {
           });
           
           this.monitorSource = this.context.createMediaStreamSource(this.monitorStream);
-          this.monitorSource.channelCountMode = 'explicit';
-          this.monitorSource.channelCount = 8;
           
-          this.monitorSplitter = this.context.createChannelSplitter(8);
+          const streamChannels = this.monitorStream.getAudioTracks()[0]?.getSettings().channelCount || 2;
+          this.monitorSplitter = this.context.createChannelSplitter(Math.max(streamChannels, 8));
           
           this.monitorAnalyser = this.context.createAnalyser();
           this.monitorAnalyser.fftSize = 256;
@@ -286,7 +295,7 @@ class AudioEngine {
           this.monitorSource.connect(this.monitorSplitter);
           
           // Map 1-based channel to 0-based index, clamp to available outputs
-          const channelIndex = Math.max(0, Math.min(inputChannel - 1, 7));
+          const channelIndex = Math.max(0, Math.min(inputChannel - 1, (this.monitorSplitter.numberOfOutputs || 8) - 1));
           
           this.monitorSplitter.connect(this.monitorAnalyser, channelIndex, 0);
           this.monitorAnalyser.connect(this.monitorGain);
@@ -367,10 +376,19 @@ class AudioEngine {
       case 'DELAY':
         const delayInput = context.createGain();
         const delayOutput = context.createGain();
-        const delayNode = context.createDelay();
+        const delayNode = context.createDelay(5.0); // max delay 5s
         const feedbackNode = context.createGain();
         const delayDry = context.createGain();
         const delayWet = context.createGain();
+        
+        // Add filters for color/character
+        const lpFilter = context.createBiquadFilter();
+        lpFilter.type = 'lowpass';
+        lpFilter.frequency.value = Number(plugin.params.lowpassFreq) || 20000;
+        
+        const hpFilter = context.createBiquadFilter();
+        hpFilter.type = 'highpass';
+        hpFilter.frequency.value = Number(plugin.params.highpassFreq) || 20;
 
         delayNode.delayTime.value = Number(plugin.params.time) || 0.3;
         if (plugin.params.syncToTempo) {
@@ -387,10 +405,13 @@ class AudioEngine {
         delayDry.connect(delayOutput);
 
         delayInput.connect(delayNode);
-        delayNode.connect(delayWet);
+        delayNode.connect(hpFilter);
+        hpFilter.connect(lpFilter);
+        lpFilter.connect(delayWet);
         delayWet.connect(delayOutput);
 
-        delayNode.connect(feedbackNode);
+        // Feedback from after filters so each repetition gets more filtered (analog style!)
+        lpFilter.connect(feedbackNode);
         feedbackNode.connect(delayNode);
 
         return {
@@ -399,77 +420,217 @@ class AudioEngine {
             _time: delayNode.delayTime,
             _feedback: feedbackNode.gain,
             _mix: delayWet.gain,
-            _dry: delayDry.gain
+            _dry: delayDry.gain,
+            _lpFreq: lpFilter.frequency,
+            _hpFreq: hpFilter.frequency
         };
         
-      case 'DISTORTION':
+      case 'DISTORTION': {
+        // A more professional distortion circuit:
+        // Input -> Pre-Gain -> Highpass (tighten low end) -> WaveShaper -> Lowpass (Tone) -> Output Gain (compensate) -> Mix
         const distInput = context.createGain();
         const distOutput = context.createGain();
+        
+        const preGain = context.createGain();
+        const hpfDist = context.createBiquadFilter();
+        hpfDist.type = 'highpass';
+        
         const waveShaper = context.createWaveShaper();
-        const toneFilter = context.createBiquadFilter();
+        waveShaper.oversample = '4x';
+        
+        const lpfDist = context.createBiquadFilter();
+        lpfDist.type = 'lowpass';
+        
+        const postGain = context.createGain();
+        
         const distDry = context.createGain();
         const distWet = context.createGain();
 
-        waveShaper.curve = this.makeDistortionCurve(Number(plugin.params.drive) || 50);
-        waveShaper.oversample = '4x';
+        // set values
+        const drive = Number(plugin.params.drive || 50);
+        const tone = Number(plugin.params.tone || 5000);
+        const mixDist = Number(plugin.params.mix ?? 1.0);
+        const distType = String(plugin.params.distType || 'soft');
 
-        toneFilter.type = 'lowpass';
-        toneFilter.frequency.value = Number(plugin.params.tone) || 3000;
+        hpfDist.frequency.value = Number(plugin.params.tight || 150); 
+        lpfDist.frequency.value = tone;
+        
+        // Drive controls the input gain into the waveshaper
+        preGain.gain.value = 1 + (drive / 10);
+        
+        waveShaper.curve = this.makeDistortionCurve(drive, distType);
+        
+        // Auto-gain compensation (rough approximation)
+        postGain.gain.value = 1 / (1 + (drive / 20));
 
-        const distMix = Number(plugin.params.mix ?? 1.0);
-        distDry.gain.value = 1 - distMix;
-        distWet.gain.value = distMix;
+        distDry.gain.value = 1 - mixDist;
+        distWet.gain.value = mixDist;
 
         distInput.connect(distDry);
         distDry.connect(distOutput);
 
-        distInput.connect(waveShaper);
-        waveShaper.connect(toneFilter);
-        toneFilter.connect(distWet);
+        distInput.connect(preGain);
+        preGain.connect(hpfDist);
+        hpfDist.connect(waveShaper);
+        waveShaper.connect(lpfDist);
+        lpfDist.connect(postGain);
+        postGain.connect(distWet);
         distWet.connect(distOutput);
 
         return {
             input: distInput,
             output: distOutput,
-            _tone: toneFilter.frequency,
+            _tone: lpfDist.frequency,
             _mix: distWet.gain,
-            _dry: distDry.gain
+            _dry: distDry.gain,
+            _tight: hpfDist.frequency
         };
+      }
         
-      case 'FILTER':
+      case 'FILTER': {
+        const filtInput = context.createGain();
+        const filtOutput = context.createGain();
+        
+        const preGain = context.createGain();
         const filter = context.createBiquadFilter();
-        filter.type = (plugin.params.filterType as BiquadFilterType) || 'lowpass';
-        filter.frequency.value = Number(plugin.params.frequency) || 1000;
-        filter.Q.value = Number(plugin.params.Q) || 1;
-        (filter as any)._frequency = filter.frequency;
-        (filter as any)._Q = filter.Q;
-        (filter as any)._type = filter.type;
-        return filter;
+        const filtShaper = context.createWaveShaper();
+        const postGain = context.createGain();
         
-      case 'TAPE_SATURATION':
+        const filtDry = context.createGain();
+        const filtWet = context.createGain();
+
+        // params
+        const type = (plugin.params.filterType as BiquadFilterType) || 'lowpass';
+        const freq = Number(plugin.params.frequency) || 1000;
+        const q = Number(plugin.params.q || plugin.params.Q || 1); // fallback
+        const drive = Number(plugin.params.drive || 0); // 0 to 100
+        const mix = Number(plugin.params.mix ?? 1.0);
+
+        filter.type = type;
+        filter.frequency.value = freq;
+        filter.Q.value = q;
+        
+        // Drive saturates the output of the filter
+        filtShaper.curve = this.makeDistortionCurve(drive, 'soft');
+        preGain.gain.value = 1 + (drive / 20); // slightly boost into filter
+        postGain.gain.value = 1 / (1 + (drive / 15)); // compensate
+
+        filtDry.gain.value = 1 - mix;
+        filtWet.gain.value = mix;
+
+        filtInput.connect(filtDry);
+        filtDry.connect(filtOutput);
+
+        filtInput.connect(preGain);
+        preGain.connect(filter);
+        filter.connect(filtShaper);
+        filtShaper.connect(postGain);
+        postGain.connect(filtWet);
+        filtWet.connect(filtOutput);
+
+        return {
+            input: filtInput,
+            output: filtOutput,
+            _frequency: filter.frequency,
+            _Q: filter.Q,
+            _type: type,
+            _mix: filtWet.gain,
+            _dry: filtDry.gain
+        };
+      }
+        
+      case 'TAPE_SATURATION': {
         const tapeInput = context.createGain();
         const tapeOutput = context.createGain();
-        const tapeShaper = context.createWaveShaper();
-        const tapeFilter = context.createBiquadFilter();
+        const tapeDry = context.createGain();
+        const tapeWet = context.createGain();
+
+        const inputDrive = context.createGain();
         
-        // Tape saturation curve
-        const drive = Number(plugin.params.drive) || 5;
-        tapeShaper.curve = this.makeDistortionCurve(drive);
+        // Emulate head bump
+        const headBump = context.createBiquadFilter();
+        headBump.type = 'peaking';
+        
+        // Saturation
+        const tapeShaper = context.createWaveShaper();
         tapeShaper.oversample = '4x';
         
-        // Tape roll-off
-        tapeFilter.type = 'lowpass';
-        tapeFilter.frequency.value = 15000; // Tape high frequency roll-off
+        // HF Roll-off
+        const hfRollOff = context.createBiquadFilter();
+        hfRollOff.type = 'lowpass';
         
-        tapeInput.connect(tapeShaper);
-        tapeShaper.connect(tapeFilter);
-        tapeFilter.connect(tapeOutput);
+        const outputTrim = context.createGain();
+
+        const driveDb = Number(plugin.params.drive ?? 0); // 0 to 24 dB
+        const bias = Number(plugin.params.bias ?? 0.0); // -1.0 to 1.0 (asymmetry)
+        const ips = Number(plugin.params.ips ?? 15); // 7.5, 15, 30
+        const mix = Number(plugin.params.mix ?? 1.0);
+        const makeupDb = Number(plugin.params.makeup ?? 0);
+        
+        // Config based on IPS (speed)
+        if (ips >= 30) {
+            headBump.frequency.value = 35;
+            headBump.Q.value = 0.5;
+            headBump.gain.value = 1.0;
+            hfRollOff.frequency.value = 20000;
+        } else if (ips <= 7.5) {
+            headBump.frequency.value = 40;
+            headBump.Q.value = 1.2;
+            headBump.gain.value = 3.0;
+            hfRollOff.frequency.value = 8000;
+        } else { // 15 ips
+            headBump.frequency.value = 60;
+            headBump.Q.value = 1.0;
+            headBump.gain.value = 2.0;
+            hfRollOff.frequency.value = 15000;
+        }
+        
+        inputDrive.gain.value = Math.pow(10, driveDb / 20);
+        
+        // crude auto-makeup: more drive = more compression/clipping = lower average peak
+        const autoMakeup = Math.pow(10, driveDb / 40); 
+        outputTrim.gain.value = (Math.pow(10, makeupDb / 20)) / autoMakeup;
+        
+        // Create asymmetric tanh-like curve
+        const n_samples = 4096;
+        const curve = new Float32Array(n_samples);
+        for (let i = 0; i < n_samples; ++i) {
+            let x = (i * 2) / n_samples - 1;
+            // add bias
+            x += bias * 0.2;
+            
+            // soft clip
+            let val = Math.atan(x * 1.5) / Math.atan(1.5);
+            // remove DC offset introduced by bias roughly
+            val -= bias * 0.1; 
+            
+            curve[i] = val;
+        }
+        tapeShaper.curve = curve;
+
+        tapeDry.gain.value = 1 - mix;
+        tapeWet.gain.value = mix;
+
+        tapeInput.connect(tapeDry);
+        tapeDry.connect(tapeOutput);
+        
+        tapeInput.connect(inputDrive);
+        inputDrive.connect(headBump);
+        headBump.connect(tapeShaper);
+        tapeShaper.connect(hfRollOff);
+        hfRollOff.connect(outputTrim);
+        outputTrim.connect(tapeWet);
+        tapeWet.connect(tapeOutput);
         
         return {
             input: tapeInput,
             output: tapeOutput,
-            _drive: tapeShaper.curve // Note: updating curve requires regenerating it
+            _drive: inputDrive.gain,
+            _makeup: outputTrim.gain,
+            _dry: tapeDry.gain,
+            _mix: tapeWet.gain
         };
+      }
         
       case 'REVERB':
          const inputNode = context.createGain();
@@ -478,9 +639,20 @@ class AudioEngine {
          const wetGain = context.createGain();
          const convolver = context.createConvolver();
          
+         const preDelay = context.createDelay(1.0);
+         const hpfRev = context.createBiquadFilter();
+         hpfRev.type = 'highpass';
+         const lpfRev = context.createBiquadFilter();
+         lpfRev.type = 'lowpass';
+         
          const mix = Number(plugin.params.mix ?? 0.5);
          const reverbType = Number(plugin.params.reverbType ?? 0);
          const decay = Number(plugin.params.decay || 2.0);
+         const preDelayTime = Number(plugin.params.preDelay || 0);
+         
+         hpfRev.frequency.value = Number(plugin.params.highpassFreq || 20);
+         lpfRev.frequency.value = Number(plugin.params.lowpassFreq || 20000);
+         preDelay.delayTime.value = preDelayTime / 1000.0;
 
          dryGain.gain.value = 1 - mix;
          wetGain.gain.value = mix;
@@ -490,7 +662,10 @@ class AudioEngine {
          inputNode.connect(dryGain);
          dryGain.connect(outputNode);
          
-         inputNode.connect(convolver);
+         inputNode.connect(preDelay);
+         preDelay.connect(hpfRev);
+         hpfRev.connect(lpfRev);
+         lpfRev.connect(convolver);
          convolver.connect(wetGain);
          wetGain.connect(outputNode);
 
@@ -498,7 +673,10 @@ class AudioEngine {
              input: inputNode, 
              output: outputNode, 
              _mix: wetGain.gain, 
-             _dry: dryGain.gain
+             _dry: dryGain.gain,
+             _preDelay: preDelay.delayTime,
+             _hpf: hpfRev.frequency,
+             _lpf: lpfRev.frequency
          };
          
 
@@ -591,69 +769,252 @@ class AudioEngine {
              _dry: atDry.gain
          };
 
-      case 'LIMITER':
-        const limiter = context.createDynamicsCompressor();
-        limiter.threshold.value = (plugin.params.threshold as number) ?? -0.1;
-        limiter.knee.value = 0.0;
-        limiter.ratio.value = 20.0;
-        limiter.attack.value = 0.001;
-        limiter.release.value = (plugin.params.release as number) ?? 0.1;
-        return limiter;
+      case 'LIMITER': {
+        const limInput = context.createGain();
+        const limOutput = context.createGain();
+        
+        const limDrive = context.createGain();
+        const limComp = context.createDynamicsCompressor();
+        const limClipper = context.createWaveShaper();
+        const limCeiling = context.createGain();
+        
+        const driveDb = Number(plugin.params.drive || 0); // 0 to 24 dB
+        const ceilingDb = Number(plugin.params.ceiling ?? -0.1); // -24 to 0 dB
+        const releaseMs = Number(plugin.params.release || 100); // 1 to 500 ms
+        const mode = String(plugin.params.mode || 'transparent');
+        
+        // Convert dB to linear gain
+        limDrive.gain.value = Math.pow(10, driveDb / 20);
+        limCeiling.gain.value = Math.pow(10, ceilingDb / 20);
+        
+        limComp.threshold.value = -0.5; // Threshold near 0dB
+        limComp.attack.value = 0.001; // Fast as possible
+        limComp.release.value = releaseMs / 1000; 
 
-      case 'COMPRESSOR':
-        const comp = context.createDynamicsCompressor();
-        comp.threshold.value = (plugin.params.threshold as number) ?? -24;
-        comp.knee.value = (plugin.params.knee as number) ?? 30;
-        comp.ratio.value = (plugin.params.ratio as number) ?? 12;
-        comp.attack.value = (plugin.params.attack as number) ?? 0.003;
-        comp.release.value = (plugin.params.release as number) ?? 0.25;
-        return comp;
+        if (mode === 'transparent') {
+            limComp.ratio.value = 20;
+            limComp.knee.value = 5;
+            limClipper.curve = this.makeDistortionCurve(5, 'soft'); // gentle safety
+        } else if (mode === 'punchy') {
+            limComp.ratio.value = 10;
+            limComp.knee.value = 0;
+            limComp.attack.value = 0.005; // let transients through
+            limClipper.curve = this.makeDistortionCurve(10, 'hard'); // catch peaks hard
+        } else if (mode === 'aggressive') {
+            limComp.ratio.value = 50;
+            limComp.knee.value = 0;
+            limClipper.curve = this.makeDistortionCurve(20, 'soft'); // add saturation
+        } else {
+            limComp.ratio.value = 20;
+            limComp.knee.value = 0;
+            limClipper.curve = this.makeDistortionCurve(10, 'hard');
+        }
 
-      case 'SIDECHAIN':
-        // Placeholder for sidechain - uses a compressor
-        const sc = context.createDynamicsCompressor();
-        sc.threshold.value = (plugin.params.threshold as number) ?? -24;
-        sc.ratio.value = (plugin.params.ratio as number) ?? 12;
-        sc.attack.value = (plugin.params.attack as number) ?? 0.003;
-        sc.release.value = (plugin.params.release as number) ?? 0.25;
-        return { input: sc, output: sc, compressor: sc };
+        limInput.connect(limDrive);
+        limDrive.connect(limComp);
+        limComp.connect(limClipper);
+        limClipper.connect(limCeiling);
+        limCeiling.connect(limOutput);
 
-      case 'EQ8':
+        return {
+          input: limInput,
+          output: limOutput,
+          _drive: limDrive.gain,
+          _ceiling: limCeiling.gain,
+          _release: limComp.release
+        };
+      }
+
+      case 'COMPRESSOR': {
+        const compInput = context.createGain();
+        const compOutput = context.createGain();
+        
+        const compDry = context.createGain();
+        const compWet = context.createGain();
+        
+        const compNode = context.createDynamicsCompressor();
+        const makeupGain = context.createGain();
+        
+        const thresDb = Number(plugin.params.threshold ?? -20);
+        const ratio = Number(plugin.params.ratio ?? 4);
+        const attackMs = Number(plugin.params.attack ?? 10);
+        const releaseMs = Number(plugin.params.release ?? 100);
+        const knee = Number(plugin.params.knee ?? 10);
+        const makeupDb = Number(plugin.params.makeup ?? 0);
+        const mixVal = Number(plugin.params.mix ?? 1.0);
+        
+        compNode.threshold.value = thresDb;
+        compNode.ratio.value = ratio;
+        compNode.attack.value = attackMs / 1000;
+        compNode.release.value = releaseMs / 1000;
+        compNode.knee.value = knee;
+        
+        makeupGain.gain.value = Math.pow(10, makeupDb / 20);
+        
+        compDry.gain.value = 1 - mixVal;
+        compWet.gain.value = mixVal;
+
+        compInput.connect(compDry);
+        compDry.connect(compOutput);
+        
+        compInput.connect(compNode);
+        compNode.connect(makeupGain);
+        makeupGain.connect(compWet);
+        compWet.connect(compOutput);
+
+        return { 
+            input: compInput, 
+            output: compOutput, 
+            _makeup: makeupGain.gain,
+            _dry: compDry.gain,
+            _mix: compWet.gain
+        };
+      }
+
+      case 'SIDECHAIN': {
+        const scInput = context.createGain(); // Target track input
+        const scOutput = context.createGain(); // Target track output
+        
+        // This gain will do the ducking
+        const duckingGain = context.createGain();
+        duckingGain.gain.value = 1.0; 
+        
+        // The external sidechain signal arrives here
+        const externalInput = context.createGain();
+        
+        // Boost/drive the external signal to hit the threshold better
+        const scDrive = context.createGain();
+        scDrive.gain.value = 1.0;
+        
+        // Rectifier and Threshold
+        const detector = context.createWaveShaper();
+        const n_samples = 4096;
+        const curve = new Float32Array(n_samples);
+        const thresholdDb = Number(plugin.params.threshold ?? -20);
+        const thresholdLin = Math.pow(10, thresholdDb / 20);
+        
+        for (let i = 0; i < n_samples; i++) {
+            const x = (i * 2) / n_samples - 1;
+            const absX = Math.abs(x);
+            // Only output positive envelope above threshold
+            curve[i] = absX > thresholdLin ? (absX - thresholdLin) : 0;
+        }
+        detector.curve = curve;
+        
+        // Envelope Smoothing
+        const envFilter = context.createBiquadFilter();
+        envFilter.type = 'lowpass';
+        // freq = 1 / (2 * pi * release_in_seconds)
+        const attackMs = Number(plugin.params.attack || 10);
+        const releaseMs = Number(plugin.params.release || 100);
+        const avgTimeMs = (attackMs + releaseMs) / 2; // approximation for biquad
+        const freq = 1000 / (2 * Math.PI * avgTimeMs);
+        envFilter.frequency.value = Math.max(0.1, freq);
+        envFilter.Q.value = 0.5; // critically damped
+
+        // Map positive envelope to negative gain change
+        const depth = Number(plugin.params.depth ?? 80) / 100;
+        const inverter = context.createGain();
+        // The detector outputs values roughly 0 to 1.
+        // We want a full envelope to reduce gain by 'depth'.
+        // So inverter gain is -depth
+        inverter.gain.value = -depth * 2.0; // scale factor for aggressive ducking
+
+        // Connections
+        scInput.connect(duckingGain);
+        duckingGain.connect(scOutput);
+
+        externalInput.connect(scDrive);
+        scDrive.connect(detector);
+        detector.connect(envFilter);
+        envFilter.connect(inverter);
+        inverter.connect(duckingGain.gain); // modulates the gain!
+
+        return { 
+            input: scInput, 
+            output: scOutput, 
+            compressor: externalInput, // The engine connects source track to node.compressor!
+            _filter: envFilter,
+            _inverter: inverter.gain
+        };
+      }
+
+      case 'EQ': {
         const eqInput = context.createGain();
         const eqOutput = context.createGain();
-        let prev = eqInput;
+        let prev: AudioNode = eqInput;
         const filters: BiquadFilterNode[] = [];
+        
         for(let i=0; i<8; i++) {
+            const active = plugin.params[`band${i}_active`] !== false; // defaults to true
+            if (!active) continue; // Skip creating/connecting this filter if not active!
+            
             const f = context.createBiquadFilter();
             f.type = (plugin.params[`band${i}_type`] as BiquadFilterType) || 'peaking';
             f.frequency.value = Number(plugin.params[`band${i}_freq`]) || (100 * Math.pow(2, i));
             f.gain.value = Number(plugin.params[`band${i}_gain`]) || 0;
             f.Q.value = Number(plugin.params[`band${i}_q`]) || 1;
+            
             prev.connect(f);
             prev = f;
             filters.push(f);
         }
+        
         prev.connect(eqOutput);
-        return { input: eqInput, output: eqOutput, filters };
+        
+        // Return structured node dict so it doesn't break parameter mapping if any
+        return { 
+            input: eqInput, 
+            output: eqOutput, 
+            filters,
+            ...filters.reduce((acc, f, i) => ({
+                ...acc,
+                [`_b${i}_f`]: f.frequency,
+                [`_b${i}_g`]: f.gain,
+                [`_b${i}_q`]: f.Q
+            }), {})
+        };
+      }
 
-      case 'BITCRUSHER':
+      case 'BITCRUSHER': {
         const bcInput = context.createGain();
         const bcOutput = context.createGain();
         const bcDry = context.createGain();
         const bcWet = context.createGain();
-        const bcShaper = context.createWaveShaper();
         
-        const bits = Number(plugin.params.bits) || 8;
+        const bcDrive = context.createGain();
+        const bcPreFilter = context.createBiquadFilter();
+        const bcShaper = context.createWaveShaper();
+        const bcPostFilter = context.createBiquadFilter();
+        
+        const bits = Number(plugin.params.bits ?? 8);
+        const driveDb = Number(plugin.params.drive ?? 0);
+        const preCut = Number(plugin.params.preCut ?? 20);
+        const postCut = Number(plugin.params.postCut ?? 20000);
         const bcMix = Number(plugin.params.mix ?? 1.0);
         
+        bcDrive.gain.value = Math.pow(10, driveDb / 20);
+        
+        bcPreFilter.type = 'highpass';
+        bcPreFilter.frequency.value = preCut;
+        
+        bcPostFilter.type = 'lowpass';
+        bcPostFilter.frequency.value = postCut;
+        
         // Bitcrush simulation using waveshaper
-        const steps = Math.pow(2, bits);
-        const bcCurve = new Float32Array(4096);
-        for (let i = 0; i < 4096; i++) {
-            const x = (i / 4096) * 2 - 1;
-            bcCurve[i] = Math.round(x * (steps / 2)) / (steps / 2);
+        if (bits >= 24) {
+            bcShaper.curve = null;
+        } else {
+            const steps = Math.pow(2, bits);
+            const bcCurve = new Float32Array(4096);
+            for (let i = 0; i < 4096; i++) {
+                const x = (i / 4096) * 2 - 1;
+                // Basic quantization
+                let val = Math.round(x * (steps / 2)) / (steps / 2);
+                bcCurve[i] = val;
+            }
+            bcShaper.curve = bcCurve;
         }
-        bcShaper.curve = bcCurve;
         
         bcDry.gain.value = 1 - bcMix;
         bcWet.gain.value = bcMix;
@@ -661,11 +1022,23 @@ class AudioEngine {
         bcInput.connect(bcDry);
         bcDry.connect(bcOutput);
         
-        bcInput.connect(bcShaper);
-        bcShaper.connect(bcWet);
+        bcInput.connect(bcPreFilter);
+        bcPreFilter.connect(bcDrive);
+        bcDrive.connect(bcShaper);
+        bcShaper.connect(bcPostFilter);
+        bcPostFilter.connect(bcWet);
         bcWet.connect(bcOutput);
         
-        return { input: bcInput, output: bcOutput };
+        return { 
+            input: bcInput, 
+            output: bcOutput,
+            _drive: bcDrive.gain,
+            _pre: bcPreFilter.frequency,
+            _post: bcPostFilter.frequency,
+            _dry: bcDry.gain,
+            _mix: bcWet.gain
+        };
+      }
 
       default:
         return context.createGain();
@@ -755,14 +1128,28 @@ class AudioEngine {
 
   // --- DSP Utilities ---
 
-  private makeDistortionCurve(amount: number) {
+  private makeDistortionCurve(amount: number, type: string = 'soft') {
     const k = typeof amount === 'number' ? amount : 50;
     const n_samples = 44100;
     const curve = new Float32Array(n_samples);
     const deg = Math.PI / 180;
     for (let i = 0; i < n_samples; ++i) {
       const x = (i * 2) / n_samples - 1;
-      curve[i] = ((3 + k) * x * 20 * deg) / (Math.PI + k * Math.abs(x));
+      
+      if (type === 'hard') {
+          // Hard clipping
+          const threshold = Math.max(0.01, 1 - (k / 100) * 0.95);
+          curve[i] = x > threshold ? threshold : (x < -threshold ? -threshold : x);
+          curve[i] = curve[i] * (1 / threshold) * 0.8; 
+      } else if (type === 'fuzz') {
+          // Fuzz (Asymmetrical heavy clipping)
+          const driveAmount = Math.max(1, k * 2);
+          const offset = 0.05 * (k / 100); 
+          curve[i] = Math.sign(x + offset) * (1 - Math.exp(-driveAmount * Math.abs(x + offset)));
+      } else {
+          // Soft clipping
+          curve[i] = ((3 + k) * x * 20 * deg) / (Math.PI + k * Math.abs(x));
+      }
     }
     return curve;
   }
@@ -1278,14 +1665,15 @@ class AudioEngine {
             this.recordingGain.connect(this.recordingDest);
         } else {
             this.recordingSource = this.context.createMediaStreamSource(stream);
-            this.recordingSource.channelCountMode = 'explicit';
-            this.recordingSource.channelCount = 8;
             
-            this.recordingSplitter = this.context.createChannelSplitter(8);
+            // Note: MediaStreamAudioSourceNode's channelCount is read-only and follows the stream.
+            // We use the ChannelSplitter to handle whatever count we got.
+            const streamChannels = stream.getAudioTracks()[0]?.getSettings().channelCount || 2;
+            this.recordingSplitter = this.context.createChannelSplitter(Math.max(streamChannels, 8));
             this.recordingSource.connect(this.recordingSplitter);
 
             this.recordingDest = this.context.createMediaStreamDestination();
-            const channelIndex = Math.max(0, Math.min(inputChannel - 1, 7));
+            const channelIndex = Math.max(0, Math.min(inputChannel - 1, (this.recordingSplitter.numberOfOutputs || 8) - 1));
 
             this.recordingGain = this.context.createGain();
             this.recordingGain.channelCount = 1;
