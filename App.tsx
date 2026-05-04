@@ -177,7 +177,7 @@ function App() {
     async function loadProject() {
       try {
         const savedData = await getItem<any>("autosave_project");
-        if (savedData && (savedData.clips?.length > 0 || savedData.tracks?.length > 2)) {
+        if (savedData && savedData.clips && savedData.clips.length > 0) {
           setPendingLoadData(savedData);
         } else {
           setIsRestoring(false);
