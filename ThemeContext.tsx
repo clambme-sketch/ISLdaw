@@ -155,7 +155,7 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({
           color: var(--main-text) !important; 
       }
       .custom-track-bg {
-          ${backgroundImage ? `background-image: linear-gradient(color-mix(in srgb, var(--bg-main) ${bgBlend}%, transparent), color-mix(in srgb, var(--bg-main) ${bgBlend}%, transparent)), url("${backgroundImage}") !important; background-size: ${bgZoom}% !important; background-position: ${bgPosX}% ${bgPosY}% !important; background-attachment: fixed !important;` : ""}
+          ${backgroundImage ? `background-image: linear-gradient(color-mix(in srgb, var(--bg-main) ${bgBlend}%, transparent), color-mix(in srgb, var(--bg-main) ${bgBlend}%, transparent)), url("${backgroundImage}") !important; background-size: ${bgZoom}% !important; background-position: ${bgPosX}% ${bgPosY}% !important;` : ""}
       }
       .bg-\\[\\#2d2d2d\\] { background-color: var(--bg-panel) !important; }
       

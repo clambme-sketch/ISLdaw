@@ -730,6 +730,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     )}
                   </div>
                 </div>
+
+                <div className="pt-2 border-t border-[#111] mt-6 flex justify-end">
+                  <button
+                    onClick={() => {
+                        setAccentColor("#00a8ff");
+                        setBackgroundColor("#1e1e1e");
+                        setFontSize(16);
+                        setFontFamily('-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif');
+                        setBackgroundImage(null);
+                        setBgPosX(50);
+                        setBgPosY(50);
+                        setBgZoom(100);
+                        setBgBlend(70);
+                    }}
+                    className="w-full md:w-auto text-xs text-[#999] hover:text-white px-4 py-2 border border-[#444] hover:bg-[#444] transition-colors uppercase tracking-wider rounded-none"
+                  >
+                    Restore Defaults
+                  </button>
+                </div>
               </div>
             )}
           </div>

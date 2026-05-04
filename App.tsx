@@ -23,6 +23,12 @@ import {
   TIMELINE_RULER_HEIGHT,
 } from "./constants";
 import { audioService } from "./services/audioEngine";
+import {
+  setItem,
+  getItem,
+  audioBufferToSerializable,
+  serializableToAudioBuffer,
+} from "./services/storageService";
 import { Plus } from "lucide-react";
 
 const INITIAL_TRACKS: Track[] = [
@@ -99,24 +105,15 @@ const MASTER_TRACK: Track = {
 
 function App() {
   // --- Core State ---
-  const [tracks, setTracks] = useState<Track[]>(() => {
-    const stored = localStorage.getItem("applet_tracks");
-    if (stored) {
-      try {
-        return JSON.parse(stored);
-      } catch (e) {
-        console.error("Failed to restore tracks from storage", e);
-      }
-    }
-    return [...INITIAL_TRACKS, MASTER_TRACK];
-  });
+  const [tracks, setTracks] = useState<Track[]>([
+    ...INITIAL_TRACKS,
+    MASTER_TRACK,
+  ]);
   const [clips, setClips] = useState<AudioClip[]>([]);
+  const [isRestoring, setIsRestoring] = useState(true);
 
   // --- UI/Tool State ---
-  const [bpm, setBpm] = useState<number>(() => {
-    const stored = localStorage.getItem("applet_bpm");
-    return stored ? parseInt(stored, 10) : 90;
-  });
+  const [bpm, setBpm] = useState<number>(90);
   const [zoom, setZoom] = useState<number>(50); // Pixels per second
   const [snap, setSnap] = useState<boolean>(true);
   const [tool, setTool] = useState<ToolType>("MOVE");
@@ -167,19 +164,120 @@ function App() {
   });
 
   useEffect(() => {
-    localStorage.setItem("applet_tracks", JSON.stringify(tracks));
-  }, [tracks]);
-
-  useEffect(() => {
-    localStorage.setItem("applet_bpm", bpm.toString());
-  }, [bpm]);
-
-  useEffect(() => {
     localStorage.setItem(
       "applet_visualizerConfig",
       JSON.stringify(visualizerConfig),
     );
   }, [visualizerConfig]);
+
+  const [pendingLoadData, setPendingLoadData] = useState<any | null>(null);
+
+  // IDB Load
+  useEffect(() => {
+    async function loadProject() {
+      try {
+        const savedData = await getItem<any>("autosave_project");
+        if (savedData && (savedData.clips?.length > 0 || savedData.tracks?.length > 2)) {
+          setPendingLoadData(savedData);
+        } else {
+          setIsRestoring(false);
+        }
+      } catch (e) {
+        console.error("Error loading project from DB", e);
+        setIsRestoring(false);
+      }
+    }
+    loadProject();
+  }, []);
+
+  const confirmLoadSession = async () => {
+    try {
+      const savedData = pendingLoadData;
+      if (!savedData) return;
+      if (savedData.tracks) {
+        setTracks(savedData.tracks);
+
+        // Apply loaded track state to AudioEngine
+        savedData.tracks.forEach((track: Track) => {
+          audioService.createTrackNodes(track.id, track.isMaster);
+          audioService.updateTrackVolume(track.id, track.volume);
+          if (track.plugins) {
+            audioService.updateTrackPlugins(track.id, track.plugins);
+          }
+        });
+        audioService.applyRealtimeSoloMute(savedData.tracks);
+      }
+      if (savedData.bpm) setBpm(savedData.bpm);
+
+      if (savedData.clips) {
+        const restoredClips: AudioClip[] = [];
+        for (const sc of savedData.clips) {
+          if (sc.bufferId) {
+            const bufferData = await getItem<any>(
+              `clip_buffer_${sc.bufferId}`,
+            );
+            if (bufferData) {
+              try {
+                const ctx = audioService.getContext();
+                const buffer = serializableToAudioBuffer(ctx, bufferData);
+                restoredClips.push({ ...sc, buffer });
+              } catch (err) {
+                console.error("Failed to restore buffer for clip", sc.id);
+              }
+            }
+          }
+        }
+        setClips(restoredClips);
+      }
+    } catch (e) {
+      console.error("Error applying loaded session", e);
+    } finally {
+      setPendingLoadData(null);
+      setIsRestoring(false);
+    }
+  };
+
+  const declineLoadSession = () => {
+    setPendingLoadData(null);
+    setIsRestoring(false);
+    
+    const defaultTracks = [...INITIAL_TRACKS, MASTER_TRACK];
+    setTracks(defaultTracks);
+    setClips([]);
+    
+    // Explicitly re-initialize audio engine for default tracks
+    defaultTracks.forEach((track) => {
+      audioService.createTrackNodes(track.id, track.isMaster);
+      audioService.updateTrackVolume(track.id, track.volume);
+      if (track.plugins) {
+        audioService.updateTrackPlugins(track.id, track.plugins);
+      }
+    });
+  };
+
+  // Autosave
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  useEffect(() => {
+    if (isRestoring) return;
+
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(async () => {
+      try {
+        const serializedClips = clips.map((c) => {
+          const { buffer, ...rest } = c;
+          return rest;
+        });
+        await setItem("autosave_project", {
+          tracks,
+          clips: serializedClips,
+          bpm,
+        });
+        console.log("Project autosaved.", new Date().toLocaleTimeString());
+      } catch (e) {
+        console.error("Autosave failed", e);
+      }
+    }, 2000);
+  }, [tracks, clips, bpm, isRestoring]);
 
   // Metronome State
   const [isMetronomeOn, setIsMetronomeOn] = useState(false);
@@ -580,10 +678,17 @@ function App() {
         // But we added safetyMargin to length by reducing offset.
         const finalDuration = Math.max(0, buffer.duration - finalClipOffset);
 
+        const newClipId = uuidv4();
+        const bufferSerialization = audioBufferToSerializable(buffer);
+        setItem(`clip_buffer_${newClipId}`, bufferSerialization).catch(
+          console.error,
+        );
+
         const newClip: AudioClip = {
-          id: uuidv4(),
+          id: newClipId,
           trackId: armedTrackId,
           buffer: buffer,
+          bufferId: newClipId,
           name: "Recording",
           startTime: finalClipStart, // Can be negative or < timelineStart
           duration: finalDuration,
@@ -653,27 +758,21 @@ function App() {
     setTracks(newTracks);
   };
 
-  const handleAddAutomationPoint = (
+  const handleUpdateAutomationPoints = (
     trackId: string,
     paramId: string,
-    point: AutomationPoint,
+    newPoints: AutomationPoint[],
   ) => {
     const newTracks = tracks.map((t) => {
       if (t.id === trackId) {
-        const points = t.automation?.[paramId]
-          ? [...t.automation[paramId]]
-          : [];
-        const existingIdx = points.findIndex(
-          (p) => Math.abs(p.time - point.time) < 0.1,
-        );
-        if (existingIdx >= 0) points[existingIdx] = point;
-        else points.push(point);
-        return { ...t, automation: { ...t.automation, [paramId]: points } };
+        return { ...t, automation: { ...t.automation, [paramId]: newPoints } };
       }
       return t;
     });
     updateStateWithHistory(newTracks, clips);
-    if (playbackState.isPlaying) startPlayback(currentTimeRef.current);
+    if (playbackState.isPlaying) {
+      audioService.updateAutomationLive(newTracks, currentTimeRef.current);
+    }
   };
 
   const deleteTrack = (id: string) => {
@@ -722,10 +821,17 @@ function App() {
         return;
       }
 
+      const newClipId = uuidv4();
+      const bufferSerialization = audioBufferToSerializable(buffer);
+      setItem(`clip_buffer_${newClipId}`, bufferSerialization).catch(
+        console.error,
+      );
+
       const newClip: AudioClip = {
-        id: uuidv4(),
+        id: newClipId,
         trackId,
         buffer,
+        bufferId: newClipId,
         name: file.name,
         startTime: time,
         duration: duration,
@@ -964,9 +1070,17 @@ function App() {
 
     try {
       const newBuffer = await audioService.bounceClip(clip);
+      const newClipId = uuidv4();
+      setItem(
+        `clip_buffer_${newClipId}`,
+        audioBufferToSerializable(newBuffer),
+      ).catch(console.error);
+
       const newClip: AudioClip = {
         ...clip,
+        id: newClipId,
         buffer: newBuffer,
+        bufferId: newClipId,
         offset: 0,
         duration: clip.duration,
         playbackRate: 1,
@@ -978,7 +1092,11 @@ function App() {
       updateStateWithHistory(tracks, newClips);
       // Keep selection
       if (selectedClipIds.includes(id)) {
-        // no-op, still selected
+        setSelectedClipIds((prev) =>
+          prev.map((selectedId) =>
+            selectedId === id ? newClipId : selectedId,
+          ),
+        );
       }
     } catch (e) {
       console.error("Flatten failed", e);
@@ -1147,7 +1265,7 @@ function App() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${songNameToSave.trim()}_${new Date().getTime()}.wav`;
+      a.download = `${songNameToSave.trim()}.wav`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -1217,6 +1335,41 @@ function App() {
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-[#1e1e1e] text-[#d4d4d4] font-sans selection:bg-[#ff7b00]/30">
+      {isRestoring && !pendingLoadData && (
+        <div className="fixed inset-0 bg-[#1e1e1e] z-[500] flex flex-col items-center justify-center text-white">
+          <div className="w-12 h-12 border-4 border-[#ff7b00] border-t-white/10 rounded-full animate-spin mb-4"></div>
+          <p className="font-bold text-sm tracking-widest uppercase text-[#ff7b00]">
+            Restoring Project
+          </p>
+          <p className="text-xs text-[#999] mt-2 max-w-xs text-center">
+            Loading audio clips into memory...
+          </p>
+        </div>
+      )}
+
+      {pendingLoadData && (
+        <div className="fixed inset-0 z-[500] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-[#2d2d2d] border border-[#111] p-6 w-96 shadow-xl flex flex-col gap-4">
+            <h2 className="text-xl font-bold text-white tracking-tight">Load Last Session?</h2>
+            <p className="text-sm text-[#999]">A previous session was found. Would you like to restore it?</p>
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                onClick={declineLoadSession}
+                className="px-4 py-2 border border-[#555] hover:bg-[#444] text-white text-sm transition-colors"
+              >
+                No
+              </button>
+              <button
+                onClick={confirmLoadSession}
+                className="px-4 py-2 bg-[#ff7b00] hover:bg-[#ff8c22] text-black font-medium text-sm transition-colors"
+              >
+                Yes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {saveModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="bg-[#2d2d2d] border border-[#111] p-6 w-96 shadow-xl flex flex-col gap-4">
@@ -1309,159 +1462,169 @@ function App() {
         setTimeDisplayFormat={setTimeDisplayFormat}
       />
 
-      {/* Main Workspace: Single Unified Scroll Container */}
-      <div
-        className="flex-1 overflow-auto relative custom-scrollbar-hidden"
-        ref={scrollContainerRef}
-        onScroll={handleMainScroll}
-      >
-        <div className="flex min-w-max">
-          {/* Sticky Left Column (Headers) */}
-          <div
-            className="sticky left-0 z-40 bg-[#2d2d2d] border-r border-[#111] flex flex-col flex-shrink-0"
-            style={{ width: TRACK_HEADER_WIDTH }}
-          >
-            {/* Sticky Top-Left Corner */}
+      {/* Main Workspace: Wrapper for Background and Scroll Container */}
+      <div className="flex-1 relative overflow-hidden flex flex-col">
+        {/* Fixed Timeline Background aligned exactly to the timeline area */}
+        <div
+          className="absolute top-0 bottom-0 right-0 pointer-events-none custom-track-bg z-0"
+          style={{ left: TRACK_HEADER_WIDTH }}
+        />
+        {/* Main Scroll Container */}
+        <div
+          className="flex-1 overflow-auto relative custom-scrollbar-hidden"
+          ref={scrollContainerRef}
+          onScroll={handleMainScroll}
+        >
+          <div className="flex min-w-max">
+            {/* Sticky Left Column (Headers) */}
             <div
-              className="sticky top-0 z-50 bg-[#2d2d2d] border-b border-[#111] flex-shrink-0"
-              style={{ height: TIMELINE_RULER_HEIGHT }}
-            />
+              className="sticky left-0 z-40 bg-[#2d2d2d] border-r border-[#111] flex flex-col flex-shrink-0"
+              style={{ width: TRACK_HEADER_WIDTH }}
+            >
+              {/* Sticky Top-Left Corner */}
+              <div
+                className="sticky top-0 z-50 bg-[#2d2d2d] border-b border-[#111] flex-shrink-0"
+                style={{ height: TIMELINE_RULER_HEIGHT }}
+              />
 
-            {/* Track Headers List */}
-            {regularTracks.map((track) => (
+              {/* Track Headers List */}
+              {regularTracks.map((track) => (
+                <TrackControl
+                  key={track.id}
+                  track={track}
+                  onUpdate={updateTrack}
+                  onDelete={deleteTrack}
+                  isArmed={armedTrackId === track.id}
+                  isRecordingGlobal={isRecording}
+                  onArmToggle={() => handleArmTrack(track.id)}
+                  onOpenEditor={setEditingTrackId}
+                  onToggleAutomation={toggleAutomation}
+                  availableInputs={availableInputs}
+                  showInputChannelSelector={showInputChannelSelector}
+                />
+              ))}
+
+              <div className="p-3">
+                <button
+                  onClick={addTrack}
+                  className="w-full py-3 border border-dashed border-[#555] rounded-none text-[#999] hover:text-[#d4d4d4] hover:border-[#888] hover:bg-[#444] flex items-center justify-center gap-2 text-sm transition-all group"
+                  title="Add a new audio track"
+                >
+                  <div className="p-1 rounded-none bg-[#444] group-hover:bg-[#555] transition-colors">
+                    <Plus size={14} />
+                  </div>
+                  <span>Add Track</span>
+                </button>
+              </div>
+
+              {/* Bottom Spacer */}
+              <div className="h-64 bg-[#2d2d2d]" />
+            </div>
+
+            {/* Main Timeline Area (Scrolls with parent) */}
+            <div className="flex flex-col flex-1 min-h-full">
+              {/* Timeline Component - renders Ruler (sticky inside) and Tracks */}
+              <Timeline
+                tracks={regularTracks}
+                clips={clips}
+                currentTime={playbackState.currentTime}
+                followPlayhead={followPlayhead}
+                setFollowPlayhead={setFollowPlayhead}
+                onClipsUpdate={updateClips} // Batch update
+                onFileDrop={handleFileDrop}
+                setClips={setClips}
+                onSeek={handleSeek}
+                bpm={bpm}
+                zoom={zoom}
+                setZoom={handleZoomChange}
+                snap={snap}
+                tool={tool}
+                selectedClipIds={selectedClipIds}
+                setSelectedClipIds={setSelectedClipIds}
+                onDeleteClips={deleteClips}
+                onDuplicateClips={duplicateClips}
+                onCopyClips={handleCopyClips}
+                onPasteClips={handlePasteClips}
+                canPaste={clipboardClips.length > 0}
+                onRenameClip={renameClip}
+                onSplitClip={handleSplitClip}
+                onUpdateAutomationPoints={handleUpdateAutomationPoints}
+                onClipResize={handleClipResize}
+                onLoopClip={handleLoopToggle}
+                onFlattenClip={handleFlattenClip}
+                onClipDoubleClick={(id) => {
+                  setIsClipEditorOpen(true);
+                  setSelectedClipIds([id]);
+                }}
+                onAutoAlign={handleAutoAlign}
+                loopRegion={loopRegion}
+                setLoopRegion={setLoopRegion}
+                onImportAudio={handleFileDrop}
+                markers={timeMarkers}
+                onAddMarker={(time, label, type, value) =>
+                  setTimeMarkers([...timeMarkers, { time, label, type, value }])
+                }
+                setBpm={setBpm}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Fixed Bottom Master Section as Overlay */}
+        <div
+          className={`absolute bottom-0 left-0 right-0 ${masterHeightClass} flex flex-col z-40 transition-all duration-300 ease-in-out pointer-events-none`}
+        >
+          {/* Master Row */}
+          <div className="flex flex-1 overflow-hidden pointer-events-none">
+            {/* Master Control (Left) */}
+            <div
+              className="flex-shrink-0 border-r border-t border-[#111] pointer-events-auto bg-[#2d2d2d] shadow-2xl relative z-40"
+              style={{ width: TRACK_HEADER_WIDTH }}
+            >
               <TrackControl
-                key={track.id}
-                track={track}
+                track={masterTrack}
                 onUpdate={updateTrack}
-                onDelete={deleteTrack}
-                isArmed={armedTrackId === track.id}
-                isRecordingGlobal={isRecording}
-                onArmToggle={() => handleArmTrack(track.id)}
+                onDelete={() => {}}
+                isArmed={false}
+                isRecordingGlobal={false}
+                onArmToggle={() => {}}
                 onOpenEditor={setEditingTrackId}
-                onToggleAutomation={toggleAutomation}
+                onToggleAutomation={() => {}}
+                onOpenVisualizerSettings={() =>
+                  setIsVisualizerSettingsOpen(true)
+                }
                 availableInputs={availableInputs}
                 showInputChannelSelector={showInputChannelSelector}
               />
-            ))}
-
-            <div className="p-3">
-              <button
-                onClick={addTrack}
-                className="w-full py-3 border border-dashed border-[#555] rounded-none text-[#999] hover:text-[#d4d4d4] hover:border-[#888] hover:bg-[#444] flex items-center justify-center gap-2 text-sm transition-all group"
-                title="Add a new audio track"
-              >
-                <div className="p-1 rounded-none bg-[#444] group-hover:bg-[#555] transition-colors">
-                  <Plus size={14} />
-                </div>
-                <span>Add Track</span>
-              </button>
             </div>
-
-            {/* Bottom Spacer */}
-            <div className="h-64 bg-[#2d2d2d]" />
-          </div>
-
-          {/* Main Timeline Area (Scrolls with parent) */}
-          <div className="flex flex-col flex-1 custom-track-bg min-h-full">
-            {/* Timeline Component - renders Ruler (sticky inside) and Tracks */}
-            <Timeline
-              tracks={regularTracks}
-              clips={clips}
-              currentTime={playbackState.currentTime}
-              followPlayhead={followPlayhead}
-              setFollowPlayhead={setFollowPlayhead}
-              onClipsUpdate={updateClips} // Batch update
-              onFileDrop={handleFileDrop}
-              setClips={setClips}
-              onSeek={handleSeek}
-              bpm={bpm}
-              zoom={zoom}
-              setZoom={handleZoomChange}
-              snap={snap}
-              tool={tool}
-              selectedClipIds={selectedClipIds}
-              setSelectedClipIds={setSelectedClipIds}
-              onDeleteClips={deleteClips}
-              onDuplicateClips={duplicateClips}
-              onCopyClips={handleCopyClips}
-              onPasteClips={handlePasteClips}
-              canPaste={clipboardClips.length > 0}
-              onRenameClip={renameClip}
-              onSplitClip={handleSplitClip}
-              onAddAutomationPoint={handleAddAutomationPoint}
-              onClipResize={handleClipResize}
-              onLoopClip={handleLoopToggle}
-              onFlattenClip={handleFlattenClip}
-              onClipDoubleClick={(id) => {
-                setIsClipEditorOpen(true);
-                setSelectedClipIds([id]);
-              }}
-              onAutoAlign={handleAutoAlign}
-              loopRegion={loopRegion}
-              setLoopRegion={setLoopRegion}
-              onImportAudio={handleFileDrop}
-              markers={timeMarkers}
-              onAddMarker={(time, label, type, value) =>
-                setTimeMarkers([...timeMarkers, { time, label, type, value }])
-              }
-              setBpm={setBpm}
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* Fixed Bottom Master Section as Overlay */}
-      <div
-        className={`absolute bottom-0 left-0 right-0 ${masterHeightClass} flex flex-col z-[60] transition-all duration-300 ease-in-out pointer-events-none`}
-      >
-        {/* Master Row */}
-        <div className="flex flex-1 overflow-hidden pointer-events-none">
-          {/* Master Control (Left) */}
-          <div
-            className="flex-shrink-0 border-r border-t border-[#111] pointer-events-auto bg-[#2d2d2d] shadow-2xl"
-            style={{ width: TRACK_HEADER_WIDTH }}
-          >
-            <TrackControl
-              track={masterTrack}
-              onUpdate={updateTrack}
-              onDelete={() => {}}
-              isArmed={false}
-              isRecordingGlobal={false}
-              onArmToggle={() => {}}
-              onOpenEditor={setEditingTrackId}
-              onToggleAutomation={() => {}}
-              onOpenVisualizerSettings={() => setIsVisualizerSettingsOpen(true)}
-              availableInputs={availableInputs}
-              showInputChannelSelector={showInputChannelSelector}
-            />
-          </div>
-          {/* Master Visualizer (Right) */}
-          <div
-            className={`flex-1 flex items-center justify-center transition-colors duration-300 ${visualizerConfig.mode === "OFF" ? "pointer-events-none bg-transparent border-t border-transparent" : "pointer-events-auto bg-[#1e1e1e]/95 backdrop-blur-md border-t border-[#111] p-2"}`}
-          >
-            {visualizerConfig.mode !== "OFF" && (
-              <MasterVisualizer
-                isPlaying={playbackState.isPlaying}
-                config={visualizerConfig}
-              />
-            )}
-          </div>
-        </div>
-
-        {/* Navigator / Scrollbar (Bottom Fixed) */}
-        <div className="h-5 bg-[#111] border-t border-[#111] pointer-events-auto">
-          <div
-            ref={navigatorRef}
-            onScroll={handleNavigatorScroll}
-            className="w-full h-full overflow-x-auto overflow-y-hidden custom-scrollbar"
-            title="Timeline Navigator"
-          >
+            {/* Master Visualizer (Right) */}
             <div
-              style={{
-                width: timelineWidth + TRACK_HEADER_WIDTH,
-                height: "1px",
-              }}
-            ></div>
+              className={`flex-1 flex items-center justify-center transition-colors duration-300 ${visualizerConfig.mode === "OFF" ? "pointer-events-none bg-transparent border-t border-transparent" : "pointer-events-auto bg-[#1e1e1e]/95 backdrop-blur-md border-t border-[#111] p-2"}`}
+            >
+              {visualizerConfig.mode !== "OFF" && (
+                <MasterVisualizer
+                  isPlaying={playbackState.isPlaying}
+                  config={visualizerConfig}
+                />
+              )}
+            </div>
+          </div>
+
+          {/* Navigator / Scrollbar (Bottom Fixed) */}
+          <div className="h-5 bg-[#111] border-t border-[#111] pointer-events-auto z-40">
+            <div
+              ref={navigatorRef}
+              onScroll={handleNavigatorScroll}
+              className="w-full h-full overflow-x-auto overflow-y-hidden custom-scrollbar"
+              title="Timeline Navigator"
+            >
+              <div
+                style={{
+                  width: timelineWidth + TRACK_HEADER_WIDTH,
+                  height: "1px",
+                }}
+              ></div>
+            </div>
           </div>
         </div>
       </div>

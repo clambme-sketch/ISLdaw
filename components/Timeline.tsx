@@ -60,10 +60,10 @@ interface TimelineProps {
   onLoopClip: (id: string) => void;
 
   onSplitClip: (clipId: string, splitTime: number) => void;
-  onAddAutomationPoint: (
+  onUpdateAutomationPoints?: (
     trackId: string,
     paramId: string,
-    point: AutomationPoint,
+    points: AutomationPoint[],
   ) => void;
   onClipResize: (
     clipId: string,
@@ -133,7 +133,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   onRenameClip,
   onLoopClip,
   onSplitClip,
-  onAddAutomationPoint,
+  onUpdateAutomationPoints,
   onClipResize,
   loopRegion,
   setLoopRegion,
@@ -198,6 +198,15 @@ export const Timeline: React.FC<TimelineProps> = ({
     end: number;
   }>({ start: 0, end: 0 });
 
+  // Automation Drag State
+  const [automationDrag, setAutomationDrag] = useState<{
+    trackId: string;
+    paramId: string;
+    pointId: string;
+    time: number;
+    value: number;
+  } | null>(null);
+
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [markerModal, setMarkerModal] = useState<MarkerModalState | null>(null);
   const [markerInputValue, setMarkerInputValue] = useState("");
@@ -215,6 +224,109 @@ export const Timeline: React.FC<TimelineProps> = ({
   const secondsPerBar = secondsPerBeat * 4;
   const pixelsPerBar = secondsPerBar * zoom;
   const pixelsPerBeat = secondsPerBeat * zoom;
+
+  // Automation Drag Effect
+  const automationDragRef = useRef(automationDrag);
+  automationDragRef.current = automationDrag;
+
+  const automationSnapTimerRef = useRef<number | null>(null);
+  const isForceSnappedRef = useRef(false);
+
+  useEffect(() => {
+    if (!automationDrag) {
+       if (automationSnapTimerRef.current) {
+         window.clearTimeout(automationSnapTimerRef.current);
+         automationSnapTimerRef.current = null;
+       }
+       isForceSnappedRef.current = false;
+       return;
+    }
+
+    const handlePointerMove = (e: PointerEvent) => {
+      const state = automationDragRef.current;
+      if (!state) return;
+      const track = tracks.find((t) => t.id === state.trackId);
+      if (!track) return;
+
+      const laneElement = document.querySelector(
+        `[data-automation-track-id="${state.trackId}"]`,
+      ) as HTMLElement;
+      if (!laneElement || !timelineRef.current) return;
+
+      const rect = timelineRef.current.getBoundingClientRect();
+      const clickX = e.clientX - rect.left + timelineRef.current.scrollLeft;
+      let newTime = Math.max(0, clickX / zoom);
+
+      const laneRect = laneElement.getBoundingClientRect();
+      const clickY = e.clientY - laneRect.top;
+      let newValue = 1 - Math.max(0, Math.min(1, clickY / laneRect.height));
+
+      // Snap logic
+      if (Math.abs(newValue - 0.5) < 0.05) {
+        if (!automationSnapTimerRef.current) {
+          automationSnapTimerRef.current = window.setTimeout(() => {
+            isForceSnappedRef.current = true;
+            // Force re-render with snapped value
+            const currentDrag = automationDragRef.current;
+            if (currentDrag) {
+               setAutomationDrag({ ...currentDrag, value: 0.5 });
+            }
+          }, 3000);
+        }
+      } else {
+        if (automationSnapTimerRef.current) {
+          window.clearTimeout(automationSnapTimerRef.current);
+          automationSnapTimerRef.current = null;
+        }
+        isForceSnappedRef.current = false;
+      }
+
+      if (isForceSnappedRef.current) {
+        newValue = 0.5;
+      }
+
+      if (snap) {
+        newTime = snapToGrid(newTime);
+      }
+
+      setAutomationDrag({
+        ...state,
+        time: newTime,
+        value: newValue,
+      });
+    };
+
+    const handlePointerUp = () => {
+      if (automationSnapTimerRef.current) {
+        window.clearTimeout(automationSnapTimerRef.current);
+        automationSnapTimerRef.current = null;
+      }
+      isForceSnappedRef.current = false;
+
+      const state = automationDragRef.current;
+      if (state && onUpdateAutomationPoints) {
+        const track = tracks.find((t) => t.id === state.trackId);
+        if (track) {
+          const points = track.automation?.[state.paramId] || [];
+          const newPoints = points.map((p) =>
+            p.id === state.pointId
+              ? { ...p, time: state.time, value: state.value }
+              : p,
+          );
+          newPoints.sort((a, b) => a.time - b.time);
+          onUpdateAutomationPoints(state.trackId, state.paramId, newPoints);
+        }
+      }
+      setAutomationDrag(null);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [automationDrag, tracks, zoom, snap, onUpdateAutomationPoints]);
 
   const totalDuration = Math.max(
     300,
@@ -591,31 +703,6 @@ export const Timeline: React.FC<TimelineProps> = ({
     const clipElement = target.closest("[data-clip-id]");
 
     const automationLane = target.closest("[data-automation-track-id]");
-    if (automationLane) {
-      const trackId = automationLane.getAttribute("data-automation-track-id");
-      const track = tracks.find((t) => t.id === trackId);
-
-      if (track && trackId) {
-        const rect = timelineRef.current?.getBoundingClientRect();
-        if (rect) {
-          const clickX =
-            e.clientX - rect.left + timelineRef.current!.scrollLeft;
-          const time = Math.max(0, clickX / zoom);
-
-          const laneRect = automationLane.getBoundingClientRect();
-          const clickY = e.clientY - laneRect.top;
-          const value = 1 - Math.max(0, Math.min(1, clickY / laneRect.height));
-          const paramId = track.selectedAutomationId || "volume";
-
-          onAddAutomationPoint(trackId, paramId, {
-            id: uuidv4(),
-            time: time,
-            value: value,
-          });
-          return;
-        }
-      }
-    }
 
     // NOTE: Blade tool logic is now handled in the clip's onClick to prevent bubbling issues.
 
@@ -985,10 +1072,47 @@ export const Timeline: React.FC<TimelineProps> = ({
     }
   };
 
+  const formatAutomationValue = (
+    paramId: string,
+    normalizedValue: number,
+  ): string => {
+    if (paramId === "volume") {
+      let db = -60;
+      if (normalizedValue <= 0.5) {
+        db = -60 + normalizedValue * 2 * 60;
+      } else {
+        db = (normalizedValue - 0.5) * 2 * 24;
+      }
+      return `${db.toFixed(1)} dB`;
+    }
+    if (paramId === "pan") {
+      const pan = normalizedValue * 2 - 1;
+      if (Math.abs(pan) < 0.05) return "C";
+      return pan < 0
+        ? `${Math.abs(pan * 100).toFixed(0)}L`
+        : `${(pan * 100).toFixed(0)}R`;
+    }
+    return normalizedValue.toFixed(2);
+  };
+
   const renderAutomationPoints = (track: Track) => {
     const activeParam = track.selectedAutomationId || "volume";
-    const points = track.automation?.[activeParam];
-    if (!points || points.length === 0) return null;
+    let points = track.automation?.[activeParam] || [];
+
+    // Apply dragged point visually
+    if (
+      automationDrag &&
+      automationDrag.trackId === track.id &&
+      automationDrag.paramId === activeParam
+    ) {
+      points = points.map((p) =>
+        p.id === automationDrag.pointId
+          ? { ...p, time: automationDrag.time, value: automationDrag.value }
+          : p,
+      );
+    }
+
+    if (points.length === 0) return null;
 
     const sortedPoints = [...points].sort((a, b) => a.time - b.time);
     const pathData = sortedPoints
@@ -1001,7 +1125,13 @@ export const Timeline: React.FC<TimelineProps> = ({
 
     return (
       <>
-        <path d={pathData} stroke="#ef4444" strokeWidth="2" fill="none" />
+        <path
+          d={pathData}
+          stroke="#ef4444"
+          strokeWidth="2"
+          fill="none"
+          style={{ pointerEvents: "none" }}
+        />
         {sortedPoints.map((p) => (
           <g key={p.id}>
             <circle
@@ -1009,7 +1139,27 @@ export const Timeline: React.FC<TimelineProps> = ({
               cy={(1 - p.value) * (AUTOMATION_HEIGHT - 16) + 8}
               r="12"
               fill="transparent"
-              className="cursor-pointer"
+              className="cursor-pointer hover:fill-white/10 transition-colors"
+              style={{ pointerEvents: "auto" }}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                const newPoints =
+                  track.automation?.[activeParam].filter(
+                    (existing) => existing.id !== p.id,
+                  ) || [];
+                onUpdateAutomationPoints?.(track.id, activeParam, newPoints);
+              }}
+              onPointerDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setAutomationDrag({
+                  trackId: track.id,
+                  paramId: activeParam,
+                  pointId: p.id,
+                  time: p.time,
+                  value: p.value,
+                });
+              }}
             />
             <circle
               cx={p.time * zoom}
@@ -1018,6 +1168,19 @@ export const Timeline: React.FC<TimelineProps> = ({
               fill="#ef4444"
               className="pointer-events-none"
             />
+            <title>{formatAutomationValue(activeParam, p.value)}</title>
+            {automationDrag?.pointId === p.id && (
+              <text
+                x={p.time * zoom + 8}
+                y={(1 - p.value) * (AUTOMATION_HEIGHT - 16) + 8 - 12}
+                fill="white"
+                fontSize="12"
+                fontWeight="bold"
+                className="pointer-events-none drop-shadow-md"
+              >
+                {formatAutomationValue(activeParam, p.value)}
+              </text>
+            )}
           </g>
         ))}
       </>
@@ -1292,15 +1455,15 @@ export const Timeline: React.FC<TimelineProps> = ({
                           <div className="absolute top-0 left-0 z-20 max-w-full w-full bg-black/30">
                             <div className="px-1 py-0.5 text-[9px] text-white truncate select-none font-medium flex items-center justify-between gap-1 pr-6">
                               <span>{clip.name}</span>
-                              <button 
+                              <button
                                 onClick={(e) => {
-                                    e.stopPropagation();
-                                    onLoopClip(clip.id);
+                                  e.stopPropagation();
+                                  onLoopClip(clip.id);
                                 }}
                                 className="opacity-0 group-hover:opacity-100 px-1 py-0.5 bg-black/50 hover:bg-[#ff7b00] rounded text-white flex-shrink-0 transition-opacity"
                                 title="Toggle Loop"
                               >
-                                  <RotateCw size={10} />
+                                <RotateCw size={10} />
                               </button>
                             </div>
                           </div>
@@ -1343,12 +1506,57 @@ export const Timeline: React.FC<TimelineProps> = ({
                   <div
                     className="bg-[#2d2d2d] border-b border-[#111] relative cursor-crosshair box-border"
                     data-automation-track-id={track.id}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      const rect = timelineRef.current?.getBoundingClientRect();
+                      if (rect) {
+                        const clickX =
+                          e.clientX -
+                          rect.left +
+                          timelineRef.current!.scrollLeft;
+                        let time = Math.max(0, clickX / zoom);
+                        if (snap) {
+                          time = snapToGrid(time);
+                        }
+
+                        const laneRect =
+                          e.currentTarget.getBoundingClientRect();
+                        const clickY = e.clientY - laneRect.top;
+                        const value =
+                          1 -
+                          Math.max(0, Math.min(1, clickY / laneRect.height));
+                        const paramId = track.selectedAutomationId || "volume";
+
+                        const points = track.automation?.[paramId] || [];
+                        const newPoints = [
+                          ...points,
+                          { id: uuidv4(), time, value },
+                        ];
+                        newPoints.sort((a, b) => a.time - b.time);
+                        onUpdateAutomationPoints?.(
+                          track.id,
+                          paramId,
+                          newPoints,
+                        );
+                      }
+                    }}
                     style={{
                       minWidth: `${totalBars * pixelsPerBar}px`,
                       height: `${AUTOMATION_HEIGHT}px`,
                     }}
                   >
-                    <div className="absolute inset-0 pointer-events-none border-b border-dashed border-[#444] top-1/2"></div>
+                    <div
+                      className="absolute inset-0 pointer-events-none border-b border-white/20 border-dotted top-1/2"
+                      style={{ transform: "translateY(-1px)" }}
+                    >
+                      <span className="text-[8px] text-white/30 ml-2 -mt-3 block">
+                        {track.selectedAutomationId === "pan"
+                          ? "C"
+                          : track.selectedAutomationId === "volume"
+                            ? "0 dB"
+                            : "50%"}
+                      </span>
+                    </div>
                     <div className="absolute top-1 left-1 text-[9px] text-[#ef4444] font-bold bg-[#111] px-1 rounded-none pointer-events-none">
                       {track.selectedAutomationId === "pan"
                         ? "Pan"

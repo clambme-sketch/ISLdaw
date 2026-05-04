@@ -26,6 +26,7 @@ export interface AudioClip {
   id: string;
   trackId: string;
   buffer: AudioBuffer;
+  bufferId?: string; // Reference to the stored AudioBuffer in IDB
   name: string;
   startTime: number; 
   duration: number; 

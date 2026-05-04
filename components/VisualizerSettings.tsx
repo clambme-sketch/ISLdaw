@@ -81,6 +81,15 @@ export const VisualizerSettings: React.FC<VisualizerSettingsProps> = ({ isOpen, 
                             </div>
                         </div>
                     )}
+                    
+                    <div className="pt-2 border-t border-[#111] mt-2">
+                        <button
+                            onClick={() => onChange({ mode: 'OFF', colorStart: '#3b82f6', colorEnd: '#ef4444' })}
+                            className="w-full text-xs text-[#999] hover:text-white p-2 border border-[#444] hover:bg-[#444] transition-colors uppercase tracking-wider"
+                        >
+                            Restore Defaults
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
