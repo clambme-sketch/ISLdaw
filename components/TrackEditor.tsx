@@ -3,6 +3,7 @@ import React, { useState } from 'react';
 import { Track, AudioPlugin, PluginType } from '../types';
 import { X, Plus, Power, Trash2, Sliders, Waves, Box, Disc, Activity, Zap, Volume2, ArrowDownToLine, ArrowUpFromLine, Scissors, Layers } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
+import { useTrackColor } from './useTrackColor';
 import EQUI from './EQUI';
 
 const PLUGIN_STYLES: Record<PluginType, { color: string, icon: any }> = {
@@ -26,6 +27,7 @@ interface TrackEditorProps {
 }
 
 export const TrackEditor: React.FC<TrackEditorProps> = ({ track, tracks, onUpdate, onClose }) => {
+  const getTrackColor = useTrackColor();
   const [isAdding, setIsAdding] = useState(false);
 
   const addPlugin = (type: PluginType) => {
@@ -156,7 +158,7 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({ track, tracks, onUpdat
         <div className="flex items-center gap-2">
             <span className="text-sm font-bold text-[#d4d4d4] uppercase tracking-wider">Track Editor:</span>
             <div className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-none" style={{ backgroundColor: track.color || '#fff' }}></div>
+                <div className="w-2 h-2 rounded-none" style={{ backgroundColor: track.color ? getTrackColor(track.color) : '#fff' }}></div>
                 <span className="text-sm text-white font-medium">{track.name}</span>
             </div>
         </div>
@@ -848,10 +850,10 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({ track, tracks, onUpdat
                                           <button 
                                               onClick={() => {
                                                updatePluginParams(plugin.id, {
-                                                   'threshold': -24,
+                                                   'threshold': -35,
                                                    'depth': 100,
-                                                   'attack': 5,
-                                                   'release': 150,
+                                                   'attack': 2,
+                                                   'release': 105,
                                                });
                                              }}
                                               className="flex-shrink-0 px-2 py-1 rounded-none text-[9px] font-bold uppercase tracking-wider bg-[#333] hover:bg-[#444] text-[#d4d4d4]"

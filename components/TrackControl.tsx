@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { audioService } from "../services/audioEngine";
 import { TRACK_HEIGHT, AUTOMATION_HEIGHT } from "../constants";
+import { useTrackColor } from "./useTrackColor";
 
 interface TrackControlProps {
   track: Track;
@@ -30,6 +31,8 @@ interface TrackControlProps {
   onOpenVisualizerSettings?: () => void;
   availableInputs?: MediaDeviceInfo[];
   showInputChannelSelector?: boolean;
+  automationTool?: "POINT" | "BELL" | "RAMP_UP" | "RAMP_DOWN";
+  setAutomationTool?: (tool: "POINT" | "BELL" | "RAMP_UP" | "RAMP_DOWN") => void;
 }
 
 export const TrackControl: React.FC<TrackControlProps> = ({
@@ -44,7 +47,10 @@ export const TrackControl: React.FC<TrackControlProps> = ({
   onOpenVisualizerSettings,
   availableInputs = [],
   showInputChannelSelector = false,
+  automationTool = "POINT",
+  setAutomationTool,
 }) => {
+  const getTrackColor = useTrackColor();
   const isMaster = track.isMaster;
   const [hasClipped, setHasClipped] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -129,10 +135,22 @@ export const TrackControl: React.FC<TrackControlProps> = ({
 
   const [isSliderHovered, setIsSliderHovered] = useState(false);
   const hoverTimeout = useRef<NodeJS.Timeout | null>(null);
+  const isDraggingRef = useRef(false);
+
+  useEffect(() => {
+    const handleGlobalMouseUp = () => {
+      isDraggingRef.current = false;
+    };
+    window.addEventListener("mouseup", handleGlobalMouseUp);
+    return () => window.removeEventListener("mouseup", handleGlobalMouseUp);
+  }, []);
 
   const handleSliderEnter = () => {
+    if (isDraggingRef.current) return;
     hoverTimeout.current = setTimeout(() => {
-      setIsSliderHovered(true);
+      if (!isDraggingRef.current) {
+        setIsSliderHovered(true);
+      }
     }, 2000);
   };
 
@@ -165,7 +183,7 @@ export const TrackControl: React.FC<TrackControlProps> = ({
               />
               <div
                 className="w-full h-full rounded-full pointer-events-none"
-                style={{ backgroundColor: track.color }}
+                style={{ backgroundColor: getTrackColor(track.color) }}
               />
             </div>
           )}
@@ -372,6 +390,10 @@ export const TrackControl: React.FC<TrackControlProps> = ({
             min="-60"
             max="24"
             step="0.1"
+            onMouseDown={() => {
+              isDraggingRef.current = true;
+              if (hoverTimeout.current) clearTimeout(hoverTimeout.current);
+            }}
             value={
               track.volume <= 0
                 ? -60
@@ -442,17 +464,68 @@ export const TrackControl: React.FC<TrackControlProps> = ({
               <TrendingUp size={10} /> Auto:
             </div>
             {/* Automation Type Selector */}
-            <div className="relative" title="Select Parameter to Automate">
+            <div className="flex items-center gap-1">
+              <div
+                className="flex bg-[#111] rounded-none overflow-hidden"
+              >
+                <div
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setAutomationTool?.("POINT");
+                  }}
+                  className={`p-1 cursor-pointer transition-colors ${automationTool === "POINT" ? "bg-[#ff7b00] text-black" : "text-[#777] hover:text-[#d4d4d4]"}`}
+                  title="Single Point Tool"
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /></svg>
+                </div>
+                <div
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setAutomationTool?.("BELL");
+                  }}
+                  className={`p-1 cursor-pointer transition-colors ${automationTool === "BELL" ? "bg-[#ff7b00] text-black" : "text-[#777] hover:text-[#d4d4d4]"}`}
+                  title="Bell Shape Tool"
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20c2 0 4-13 8-13s6 13 8 13"/></svg>
+                </div>
+                {(!track.selectedAutomationId || track.selectedAutomationId === "volume") ? null : (
+                <div
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setAutomationTool?.("RAMP_UP");
+                  }}
+                  className={`p-1 cursor-pointer transition-colors ${automationTool === "RAMP_UP" ? "bg-[#ff7b00] text-black" : "text-[#777] hover:text-[#d4d4d4]"}`}
+                  title="Ramp Up Tool"
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20L20 4"/></svg>
+                </div>
+                )}
+                <div
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setAutomationTool?.("RAMP_DOWN");
+                  }}
+                  className={`p-1 cursor-pointer transition-colors ${automationTool === "RAMP_DOWN" ? "bg-[#ff7b00] text-black" : "text-[#777] hover:text-[#d4d4d4]"}`}
+                  title="Ramp Down Tool"
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4L20 20"/></svg>
+                </div>
+              </div>
+              <div className="relative" title="Select Parameter to Automate">
               <select
                 className="bg-[#111] text-[9px] text-[#d4d4d4] border border-[#111] rounded-none px-1 py-0.5 outline-none focus:border-[#ff7b00] w-28 appearance-none"
                 value={track.selectedAutomationId || "volume"}
-                onChange={(e) =>
-                  onUpdate(track.id, { selectedAutomationId: e.target.value })
-                }
+                onChange={(e) => {
+                  if (e.target.value === "volume" && automationTool === "RAMP_UP") {
+                    setAutomationTool?.("POINT");
+                  }
+                  onUpdate(track.id, { selectedAutomationId: e.target.value });
+                }}
                 onClick={(e) => e.stopPropagation()}
               >
                 <option value="volume">Volume</option>
                 <option value="pan">Pan</option>
+                <option value="playbackRate">Speed / Tape Stop</option>
                 {/* Dynamic Plugin Params */}
                 {track.plugins.map((p) => {
                   if (p.type === "REVERB")
@@ -487,6 +560,7 @@ export const TrackControl: React.FC<TrackControlProps> = ({
                 size={10}
                 className="absolute right-1 top-1 text-[#777] pointer-events-none"
               />
+            </div>
             </div>
           </div>
           <span className="text-[8px] text-[#777] text-right">

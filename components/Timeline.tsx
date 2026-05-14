@@ -23,6 +23,7 @@ import {
   Scissors,
 } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
+import { useTrackColor } from "./useTrackColor";
 import {
   TRACK_HEIGHT,
   AUTOMATION_HEIGHT,
@@ -37,6 +38,7 @@ interface TimelineProps {
   zoom: number; // pixels per second
   snap: boolean;
   tool: ToolType;
+  automationTool?: "POINT" | "BELL" | "RAMP_UP" | "RAMP_DOWN";
   followPlayhead: boolean;
   setFollowPlayhead: (follow: boolean) => void;
 
@@ -118,6 +120,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   setZoom,
   snap,
   tool,
+  automationTool = "POINT",
   followPlayhead,
   setFollowPlayhead,
   onClipsUpdate,
@@ -145,6 +148,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   onClipDoubleClick,
   onAutoAlign,
 }) => {
+  const getTrackColor = useTrackColor();
   const playheadRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -260,6 +264,14 @@ export const Timeline: React.FC<TimelineProps> = ({
       const laneRect = laneElement.getBoundingClientRect();
       const clickY = e.clientY - laneRect.top;
       let newValue = 1 - Math.max(0, Math.min(1, clickY / laneRect.height));
+
+      if (automationTool === "RAMP_DOWN") {
+        newValue = 0;
+      } else if (automationTool === "RAMP_UP") {
+        if (state.paramId !== "volume") {
+          newValue = 1;
+        }
+      }
 
       // Snap logic
       if (Math.abs(newValue - 0.5) < 0.05) {
@@ -1132,6 +1144,52 @@ export const Timeline: React.FC<TimelineProps> = ({
           fill="none"
           style={{ pointerEvents: "none" }}
         />
+        {sortedPoints.map((p, i) => {
+          if (i === 0) return null;
+          const prev = sortedPoints[i - 1];
+          return automationTool === "BELL" ? (
+             <line
+                key={`line-${p.id}`}
+                x1={prev.time * zoom}
+                y1={(1 - prev.value) * (AUTOMATION_HEIGHT - 16) + 8}
+                x2={p.time * zoom}
+                y2={(1 - p.value) * (AUTOMATION_HEIGHT - 16) + 8}
+                stroke="transparent"
+                strokeWidth="16"
+                className="cursor-ns-resize"
+                style={{ pointerEvents: "auto" }}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  
+                  const rect = timelineRef.current?.getBoundingClientRect();
+                  if (!rect) return;
+                  const clickX = e.clientX - rect.left + timelineRef.current!.scrollLeft;
+                  let time = Math.max(0, clickX / zoom);
+                  if (snap) time = snapToGrid(time);
+                  
+                  // Bound time between prev and current
+                  time = Math.max(prev.time + 0.001, Math.min(p.time - 0.001, time));
+                  
+                  const ratio = (time - prev.time) / (p.time - prev.time);
+                  const dragStartYValue = prev.value + ratio * (p.value - prev.value);
+                  
+                  const newId = uuidv4();
+                  const newPoints = [...points, { id: newId, time, value: dragStartYValue }];
+                  newPoints.sort((a, b) => a.time - b.time);
+                  onUpdateAutomationPoints?.(track.id, activeParam, newPoints);
+                  
+                  setAutomationDrag({
+                    trackId: track.id,
+                    paramId: activeParam,
+                    pointId: newId,
+                    time,
+                    value: dragStartYValue,
+                  });
+                }}
+             />
+          ) : null;
+        })}
         {sortedPoints.map((p) => (
           <g key={p.id}>
             <circle
@@ -1441,7 +1499,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                             style={{
                               backgroundColor: track.muted
                                 ? "#444"
-                                : track.color,
+                                : getTrackColor(track.color),
                             }}
                           ></div>
                           {clip.loop && (
@@ -1528,10 +1586,20 @@ export const Timeline: React.FC<TimelineProps> = ({
                         const paramId = track.selectedAutomationId || "volume";
 
                         const points = track.automation?.[paramId] || [];
-                        const newPoints = [
-                          ...points,
-                          { id: uuidv4(), time, value },
-                        ];
+                        let newPoints = [...points];
+
+                        if (automationTool === "POINT" || automationTool === "BELL") {
+                           newPoints.push({ id: uuidv4(), time, value });
+                        } else if (automationTool === "RAMP_DOWN") {
+                           newPoints.push({ id: uuidv4(), time, value: 0 });
+                        } else if (automationTool === "RAMP_UP") {
+                           if (paramId === "volume") {
+                             newPoints.push({ id: uuidv4(), time, value });
+                           } else {
+                             newPoints.push({ id: uuidv4(), time, value: 1 });
+                           }
+                        }
+
                         newPoints.sort((a, b) => a.time - b.time);
                         onUpdateAutomationPoints?.(
                           track.id,
@@ -1546,21 +1614,32 @@ export const Timeline: React.FC<TimelineProps> = ({
                     }}
                   >
                     <div
-                      className="absolute inset-0 pointer-events-none border-b border-white/20 border-dotted top-1/2"
-                      style={{ transform: "translateY(-1px)" }}
+                      className="absolute w-full pointer-events-none border-t border-white/20 border-dotted"
+                      style={{ 
+                        top: track.selectedAutomationId === 'pan' || track.selectedAutomationId === 'playbackRate' 
+                          ? '50%' 
+                          : (!track.selectedAutomationId || track.selectedAutomationId === 'volume')
+                            ? `${100 - (60/84 * 100)}%` // 0dB is ~71.4% up from bottom
+                            : '50%',
+                        transform: "translateY(-1px)" 
+                      }}
                     >
                       <span className="text-[8px] text-white/30 ml-2 -mt-3 block">
                         {track.selectedAutomationId === "pan"
                           ? "C"
-                          : track.selectedAutomationId === "volume"
-                            ? "0 dB"
-                            : "50%"}
+                          : track.selectedAutomationId === "playbackRate"
+                            ? "1x"
+                            : (!track.selectedAutomationId || track.selectedAutomationId === "volume")
+                              ? "0 dB"
+                              : "50%"}
                       </span>
                     </div>
                     <div className="absolute top-1 left-1 text-[9px] text-[#ef4444] font-bold bg-[#111] px-1 rounded-none pointer-events-none">
                       {track.selectedAutomationId === "pan"
                         ? "Pan"
-                        : track.selectedAutomationId === "volume"
+                        : track.selectedAutomationId === "playbackRate"
+                          ? "Speed"
+                          : (!track.selectedAutomationId || track.selectedAutomationId === "volume")
                           ? "Vol"
                           : track.selectedAutomationId
                               ?.split(":")[1]

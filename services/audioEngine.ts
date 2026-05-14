@@ -11,6 +11,7 @@ interface ActiveSource {
   source: AudioBufferSourceNode;
   gain: GainNode;
   panner: StereoPannerNode;
+  trackId: string;
 }
 
 interface TrackNodes {
@@ -950,12 +951,21 @@ class AudioEngine {
         const curve = new Float32Array(n_samples);
         const thresholdDb = Number(plugin.params.threshold ?? -20);
         const thresholdLin = Math.pow(10, thresholdDb / 20);
+        
+        // Aggressive multiplier for hard pumping
+        const sidechainDrive = 15.0;
 
         for (let i = 0; i < n_samples; i++) {
           const x = (i * 2) / n_samples - 1;
           const absX = Math.abs(x);
-          // Only output positive envelope above threshold
-          curve[i] = absX > thresholdLin ? absX - thresholdLin : 0;
+          if (absX > thresholdLin) {
+             let env = (absX - thresholdLin) * sidechainDrive;
+             // Clamp to 1.0 to prevent phase inversion when ducking
+             if (env > 1.0) env = 1.0;
+             curve[i] = env;
+          } else {
+             curve[i] = 0;
+          }
         }
         detector.curve = curve;
 
@@ -966,17 +976,16 @@ class AudioEngine {
         const attackMs = Number(plugin.params.attack || 10);
         const releaseMs = Number(plugin.params.release || 100);
         const avgTimeMs = (attackMs + releaseMs) / 2; // approximation for biquad
-        const freq = 1000 / (2 * Math.PI * avgTimeMs);
+        const freq = 1000 / (2 * Math.PI * Math.max(1, avgTimeMs));
         envFilter.frequency.value = Math.max(0.1, freq);
         envFilter.Q.value = 0.5; // critically damped
 
         // Map positive envelope to negative gain change
         const depth = Number(plugin.params.depth ?? 80) / 100;
         const inverter = context.createGain();
-        // The detector outputs values roughly 0 to 1.
-        // We want a full envelope to reduce gain by 'depth'.
-        // So inverter gain is -depth
-        inverter.gain.value = -depth * 2.0; // scale factor for aggressive ducking
+        // Since we clamped the envelope to 1.0 max, 
+        // a depth of 100% means the gain will drop to 1.0 - 1.0 = 0.0
+        inverter.gain.value = -depth;
 
         // Connections
         scInput.connect(duckingGain);
@@ -1379,7 +1388,7 @@ class AudioEngine {
           gain.connect(this.masterInput);
         }
 
-        this.activeSources.set(clip.id, { source, gain, panner });
+        this.activeSources.set(clip.id, { source, gain, panner, trackId: clip.trackId });
         source.onended = () => {
           const current = this.activeSources.get(clip.id);
           if (current && current.source === source) {
@@ -1440,6 +1449,23 @@ class AudioEngine {
           param = nodes.fader.gain;
           param.cancelScheduledValues(now);
           param.setValueAtTime(initialValue, now);
+        } else if (paramId === "playbackRate") {
+          // Playback rate applies to all ACTIVE clip sources for this track
+          const sorted = [...points].sort((a, b) => a.time - b.time);
+          for (const active of this.activeSources.values()) {
+            if (active.trackId === track.id) {
+               const pbdParam = active.source.playbackRate;
+               pbdParam.cancelScheduledValues(now);
+               pbdParam.setValueAtTime(initialValue, now);
+               sorted.forEach((point) => {
+                 const absoluteTime = now + (point.time - startTime);
+                 if (absoluteTime >= now) {
+                    const scaledValue = this.scaleAutomationValue(paramId, point.value);
+                    pbdParam.linearRampToValueAtTime(Math.max(0.001, scaledValue), Math.max(now + 0.001, absoluteTime));
+                 }
+               });
+            }
+          }
         } else if (paramId === "pan") {
           param = nodes.panner.pan;
           param.cancelScheduledValues(now);
@@ -1496,6 +1522,10 @@ class AudioEngine {
         db = (normalizedValue - 0.5) * 2 * 24; // 0.5 -> 0dB, 1.0 -> +24dB
       }
       return db <= -60 ? 0 : Math.pow(10, db / 20);
+    }
+    if (paramId === "playbackRate") {
+       // 0 -> 0x (stop), 0.5 -> 1x (normal), 1.0 -> 2x (double speed)
+       return normalizedValue * 2.0;
     }
     if (paramId === "pan") return normalizedValue * 2 - 1; // -1 to 1
 
@@ -1754,6 +1784,7 @@ class AudioEngine {
     });
 
     const anySolo = tracks.some((t) => t.soloed);
+    const offlineActiveSources: {trackId: string, source: AudioBufferSourceNode}[] = [];
 
     this.scheduleClips(
       offlineCtx,
@@ -1765,6 +1796,7 @@ class AudioEngine {
       (clip, source, gain, panner) => {
         const input = offlineTrackInputs.get(clip.trackId);
         if (input) gain.connect(input);
+        offlineActiveSources.push({ trackId: clip.trackId, source });
       },
     );
 
@@ -1784,6 +1816,18 @@ class AudioEngine {
             if (paramId === 'volume') {
                 param = nodes.fader.gain;
                 param.setValueAtTime(initialValue, 0);
+            } else if (paramId === 'playbackRate') {
+                const sorted = [...points].sort((a,b) => a.time - b.time);
+                offlineActiveSources.forEach(active => {
+                    if (active.trackId === track.id) {
+                        const pbdParam = active.source.playbackRate;
+                        pbdParam.setValueAtTime(initialValue, 0);
+                        sorted.forEach(point => {
+                            const scaledValue = this.scaleAutomationValue(paramId, point.value);
+                            pbdParam.linearRampToValueAtTime(Math.max(0.001, scaledValue), Math.max(0.001, point.time));
+                        });
+                    }
+                });
             } else if (paramId === 'pan') {
                 param = nodes.panner.pan;
                 param.setValueAtTime(initialValue, 0);

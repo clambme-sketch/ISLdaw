@@ -94,7 +94,7 @@ const MASTER_TRACK: Track = {
       id: "master-limiter",
       type: "LIMITER",
       enabled: true,
-      params: { threshold: -0.1, release: 0.1 },
+      params: { mode: "transparent", drive: 0, ceiling: -0.1, release: 100 },
     },
   ],
   isMaster: true,
@@ -117,6 +117,7 @@ function App() {
   const [zoom, setZoom] = useState<number>(50); // Pixels per second
   const [snap, setSnap] = useState<boolean>(true);
   const [tool, setTool] = useState<ToolType>("MOVE");
+  const [automationTool, setAutomationTool] = useState<"POINT" | "BELL" | "RAMP_UP" | "RAMP_DOWN">("POINT");
   const [isExporting, setIsExporting] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [timeMarkers, setTimeMarkers] = useState<
@@ -443,7 +444,7 @@ function App() {
       const nextState = history[historyIndex + 1];
       setTracks(nextState.tracks);
       setClips(nextState.clips);
-      setHistoryIndex(historyIndex - 1);
+      setHistoryIndex(historyIndex + 1);
       nextState.tracks.forEach((t) => {
         audioService.updateTrackVolume(t.id, t.volume);
         audioService.updateTrackPlugins(t.id, t.plugins);
@@ -1501,6 +1502,8 @@ function App() {
                   onToggleAutomation={toggleAutomation}
                   availableInputs={availableInputs}
                   showInputChannelSelector={showInputChannelSelector}
+                  automationTool={automationTool}
+                  setAutomationTool={setAutomationTool}
                 />
               ))}
 

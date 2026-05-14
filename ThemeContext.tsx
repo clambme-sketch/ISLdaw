@@ -119,6 +119,10 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({
     // If background gets too light, standard text needs to be dark
     const mainText = bgLuminance > 0.5 ? "#111111" : "#d4d4d4";
     const subText = bgLuminance > 0.5 ? "#444444" : "#999999";
+    
+    // Adaptive button backgrounds
+    const btnBg = bgLuminance > 0.5 ? "rgba(0,0,0,0.07)" : "#444444";
+    const btnHoverBg = bgLuminance > 0.5 ? "rgba(0,0,0,0.15)" : "#555555";
 
     const root = document.documentElement;
     root.style.setProperty("--accent", accentColor);
@@ -128,6 +132,8 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({
     root.style.setProperty("--bg-panel", panelBg);
     root.style.setProperty("--main-text", mainText);
     root.style.setProperty("--sub-text", subText);
+    root.style.setProperty("--btn-bg", btnBg);
+    root.style.setProperty("--btn-hover-bg", btnHoverBg);
     root.style.fontSize = `${fontSize}px`;
 
     // Inject style tag to override Tailwind arbitrary values
@@ -158,6 +164,19 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({
           ${backgroundImage ? `background-image: linear-gradient(color-mix(in srgb, var(--bg-main) ${bgBlend}%, transparent), color-mix(in srgb, var(--bg-main) ${bgBlend}%, transparent)), url("${backgroundImage}") !important; background-size: ${bgZoom}% !important; background-position: ${bgPosX}% ${bgPosY}% !important;` : ""}
       }
       .bg-\\[\\#2d2d2d\\] { background-color: var(--bg-panel) !important; }
+      
+      .bg-\\[\\#111\\], .bg-\\[\\#111111\\] { background-color: color-mix(in srgb, var(--bg-main) 80%, var(--main-text)) !important; }
+      .focus\\:bg-\\[\\#111\\]:focus { background-color: color-mix(in srgb, var(--bg-main) 80%, var(--main-text)) !important; }
+      .border-\\[\\#111\\], .border-\\[\\#111111\\] { border-color: color-mix(in srgb, var(--bg-main) 80%, var(--main-text)) !important; }
+      .border-\\[\\#222\\], .border-\\[\\#222222\\] { border-color: color-mix(in srgb, var(--bg-main) 70%, var(--main-text)) !important; }
+      
+      .bg-\\[\\#444\\], .bg-\\[\\#444444\\] { background-color: var(--btn-bg) !important; }
+      .hover\\:bg-\\[\\#444\\]:hover, .hover\\:bg-\\[\\#444444\\]:hover { background-color: var(--btn-bg) !important; }
+      .hover\\:bg-\\[\\#555\\]:hover, .hover\\:bg-\\[\\#555555\\]:hover { background-color: var(--btn-hover-bg) !important; }
+      .border-\\[\\#444\\] { border-color: var(--btn-bg) !important; }
+      
+      .bg-\\[\\#333\\], .bg-\\[\\#333333\\] { background-color: color-mix(in srgb, var(--bg-main) 90%, var(--main-text)) !important; }
+      .hover\\:bg-\\[\\#333\\]:hover, .hover\\:bg-\\[\\#333333\\]:hover { background-color: color-mix(in srgb, var(--bg-main) 85%, var(--main-text)) !important; }
       
       .text-\\[\\#d4d4d4\\] { color: var(--main-text) !important; }
       .hover\\:text-\\[\\#d4d4d4\\]:hover { color: var(--main-text) !important; }
